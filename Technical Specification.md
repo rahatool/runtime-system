@@ -214,3 +214,30 @@ This is the stable, user-facing API.
 - HandleStore: Exposing raw C++ pointers to JavaScript is a major security and stability risk. The `HandleStore` acts as a "kernel boundary," ensuring that JS code can only interact with resources via a safe ID, preventing use-after-free, type confusion, and memory corruption.
 
 - Fixed-Size Stacks: Implementing dynamically resizable stacks (stack "hot-swapping") is extraordinarily complex and a common source of bugs. By allocating a generous (1MB) fixed-size stack per fiber, we provide a simple, robust, and highly performant solution that is sufficient for all but the most extreme recursive use cases.
+
+## future works
+```js:runtime.js
+let loadedExtensions = new Map();
+import.meta.resolver = (path, from/base) => {
+	if (loadedExtensions.has(path)) {
+		return loadedExtensions.get(path);
+	}
+
+	// loader
+	// remotely-loaded extension
+	// locally-loaded extension
+
+	// parser
+	return import.meta.parse(source);
+};
+export let resolver = import.meta.resolver;
+```
+
+### in wasm
+- WebCrypto API: https://github.com/jedisct1/openssl-wasm
+- brotli: https://github.com/httptoolkit/brotli-wasm
+- gzip: https://github.com/ColinTimBarndt/wasm-gzip
+- libuv: https://github.com/nodejs/uvwasi
+
+### see also
+https://gemini.google.com/app/4dc9d4c215bb653a
