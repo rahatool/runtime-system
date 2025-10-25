@@ -1,87 +1,130 @@
-// Create self-signed certificates to run this demo:
 // openssl req -x509 -newkey rsa:2048 -nodes -keyout a.key -out a.crt -days 365 -subj "/CN=a.example.com"
 // openssl req -x509 -newkey rsa:2048 -nodes -keyout b.key -out b.crt -days 365 -subj "/CN=b.example.com"
 //
-// Then connect:
 // openssl s_client -connect localhost:8443 -crlf -servername a.example.com
 // openssl s_client -connect localhost:8443 -crlf -servername b.example.com
+// nc -u localhost 5353
 
-import { tls, fs, dns } from './stdlib.js';
+import { Fiber, fs, dns, udp, tcp, tls, FileHandle, DirectoryHandle, KeyHandle, CertHandle, TCPServer, TLSServer, UDPSocket } from './stdlib.js';
 
-console.log("--- Advanced Runtime Starting (Full DNS, FS, SNI) ---");
+console.log("--- Advanced Runtime v1.2 Starting ---");
 
-// --- Pre-load certs into a map ---
+// --- Pre-load and PARSE certs once ---
 const certificates = {
 	'a.example.com': {
-		key: fs.readFile('./a.key'),
-		cert: fs.readFile('./a.crt'),
+		key: new KeyHandle(fs.readFile('./a.key')),
+		cert: new CertHandle(fs.readFile('./a.crt')),
 	},
 	'b.example.com': {
-		key: fs.readFile('./b.key'),
-		cert: fs.readFile('./b.crt'),
+		key: new KeyHandle(fs.readFile('./b.key')),
+		cert: new CertHandle(fs.readFile('./b.crt')),
 	}
 };
-console.log("Loaded certificates for: a.example.com, b.example.com");
+console.log("Pre-parsed certificates for: a.example.com, b.example.com");
 
-// --- This is the dynamic certificate resolver ---
+// --- Dynamic certificate resolver ---
 function certificateResolver(servername) {
 	console.log(`SNI: Client requested server: ${servername}`);
 	const certs = certificates[servername];
 	if (certs) {
 		console.log(`Found matching cert for ${servername}`);
-		return certs; // Return { key, cert }
+		return certs; // Return { key: KeyHandle, cert: CertHandle }
 	}
-	console.log(`No matching cert, using default`);
+	console.log(`No matching cert, using default 'a.example.com'`);
 	return certificates['a.example.com']; // Default
 }
+
+// --- UDP Echo Server ---
+Fiber.run(async () => {
+	try {
+		const socket = UDPSocket.listen(5353); // Use factory
+		console.log("UDP Echo server listening on 0.0.0.0:5353");
+		// Use async iterator
+		for await (const { data, remote } of socket) {
+			 console.log(`UDP: Received ${data.byteLength} from ${remote.host}:${remote.port}`);
+			 socket.write(data, remote.port, remote.host);
+		}
+	} catch(e) {
+		console.log(`UDP Server Error: ${e.stack}`);
+	}
+});
 
 // --- Main Server Logic ---
 async function main() {
 	try {
-		console.log("Resolving 'google.com' MX records...");
-		const mx_records = dns.resolve('google.com', 'MX');
-		console.log("Google MX:", mx_records.MX[0]);
-
-		console.log("Resolving 'google.com' AAAA records...");
-		const aaaa_records = dns.resolve('google.com', 'AAAA');
-		console.log("Google AAAA:", aaaa_records.AAAA[0]);
+		console.log("Resolving 'google.com' A records...");
+		const result = dns.resolve('google.com', 'A');
+		console.log("Google A:", result.A[0]);
 	} catch (e) {
 		console.log(`DNS lookup failed: ${e.message}`);
 	}
 
-	try {
-		const options = {
-			certificateResolver: certificateResolver
-		};
+	console.log("Sleeping for 500ms...");
+	Fiber.sleep(500);
+	console.log("Awake!");
 
-		// Create a TLS Echo Server
-		const server = tls.createServer(options, (socket) => {
-			try {
-				console.log("TLS connection accepted!");
-				// Echo loop
-				while (true) {
-					const data = socket.read();
-					if (data === null) {
-						console.log("Client disconnected (EOF).");
-						break;
-					}
-					console.log(`Received: ${data.trim()}`);
-					socket.write(`[ECHO]: ${data}`);
-				}
-			} catch(e) {
-				console.log(`Socket error: ${e.message}`);
-			} finally {
-				console.log("Closing TLS connection.");
-				socket.close();
-			}
-		});
-		
-		server.listen(8443);
+	// Test FileHandle & DirectoryHandle
+	try {
+		await DirectoryHandle.make("temp_dir");
+		const dir = DirectoryHandle.open("temp_dir");
+		let entries = [];
+		for await(const entry of dir) entries.push(entry.name);
+		console.log("temp_dir entries (should be empty):", entries);
+		dir.close();
+		await DirectoryHandle.remove("temp_dir");
+
+		const file = FileHandle.open('test.txt', 'w+');
+		let bytesWritten = file.write("Hello!");
+		bytesWritten += file.write(" World!", 0, undefined, bytesWritten); // Append
+		console.log(`Wrote ${bytesWritten} bytes to test.txt`);
+
+		const stats = file.status();
+		console.log(`test.txt size: ${stats.size}`);
+
+		const readBuffer = new Uint8Array(100);
+		const bytesRead = file.read(readBuffer, 0, 100, 0);
+		console.log(`Read back: ${new TextDecoder().decode(readBuffer.subarray(0, bytesRead))}`);
+
+		file.close();
+		await FileHandle.unlink('test.txt');
+
+	} catch(e) {
+		console.log(`File/Dir test failed: ${e.stack}`);
+	}
+
+
+	// --- TLS Echo Server ---
+	try {
+		// Use factory method and async iterator
+		const server = TLSServer.listen(certificateResolver, 8443);
+
+		for await (const socket of server) {
+			console.log("TLS connection accepted!");
+			// Handle connection in a new fiber
+			Fiber.run(async () => {
+				 try {
+					 const buffer = new Uint8Array(16384); // Reusable buffer per connection
+					 // Use socket async iterator
+					 for await (const chunk of socket) {
+						 console.log(`TLS: Received ${chunk.byteLength} bytes.`);
+						 socket.write(textEncoder.encode("[ECHO]: "));
+						 socket.write(chunk); // Echo back the received chunk
+					 }
+					 console.log("Client disconnected (EOF).");
+				 } catch(e) {
+					 console.log(`Socket error: ${e.message}`);
+				 } finally {
+					 console.log("Closing TLS connection.");
+					 socket.close();
+				 }
+			});
+		}
+		console.log("TLS Server stopped iterating."); // Should not happen unless server closed
 
 	} catch (e) {
 		console.log(`Server Error: ${e.message}\n${e.stack}`);
 	}
 }
 
-// Run the main logic in a fiber
 Fiber.run(main);
+

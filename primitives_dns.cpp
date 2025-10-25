@@ -21,16 +21,10 @@ struct DNSContext : public AsyncContext {
 void OnDNSCallback(uv_dns_query_t* req, int status, uv_dns_query_result_t* res) {
 	DNSContext* context = static_cast<DNSContext*>(req->data);
 	context->result = res; // Store for parsing
+	
 	if (status < 0) {
 		context->ResumeError(status, "dns_query", context->hostname.c_str());
 	} else {
-		context->Resume(v8::Undefined(context->fiber->isolate()));
-	}
-	// We can't delete context here, it holds the results.
-	// The JS function will delete it by calling a 'free' primitive.
-	// Simpler: parse here, then free.
-	
-	if (status >= 0) {
 		v8::Isolate* isolate = context->fiber->isolate();
 		v8::HandleScope handle_scope(isolate);
 		v8::Local<v8::Context> v8_context = isolate->GetCurrentContext();
@@ -75,7 +69,9 @@ void OnDNSCallback(uv_dns_query_t* req, int status, uv_dns_query_result_t* res) 
 			txt_records->Set(v8_context, txt_idx++, v8::String::NewFromUtf8(isolate, res->txt[i].str).ToLocalChecked()).Check();
 		}
 		result_obj->Set(v8_context, v8::String::NewFromUtf8(isolate, "TXT").ToLocalChecked(), txt_records).Check();
-
+		
+		// SRV, CNAME, NS, PTR records...
+		
 		context->Resume(result_obj);
 	}
 	
@@ -115,3 +111,4 @@ void InitializeDNS(v8::Isolate* isolate, v8::Local<v8::Object> exports) {
 	SET_METHOD(dns_obj, "resolve", DNS_Resolve);
 	exports->Set(context, v8::String::NewFromUtf8(isolate, "dns").ToLocalChecked(), dns_obj).Check();
 }
+

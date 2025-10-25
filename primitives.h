@@ -8,6 +8,9 @@
 #include "v8.h"
 #include "uv.h"
 #include "fiber.h"
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+#include <openssl/pem.h>
 
 // --- Helper to throw V8 exceptions ---
 inline void Throw(v8::Isolate* isolate, const char* message) {
@@ -46,30 +49,42 @@ inline void ReportException(v8::Isolate* isolate, v8::TryCatch* try_catch) {
 // --- V8 Helpers ---
 #define SET_METHOD(obj, name, func) obj->Set(context, v8::String::NewFromUtf8(isolate, name).ToLocalChecked(), v8::FunctionTemplate::New(isolate, func)->GetFunction(context).ToLocalChecked()).Check()
 
+// Gets pointer and length from Uint8Array, performs bounds check
+inline bool GetUint8ArrayData(v8::Local<v8::Uint8Array> arr, char** data, size_t* length) {
+	 if (!arr->HasBuffer() || arr->Buffer().IsEmpty()) {
+		 Throw(v8::Isolate::GetCurrent(), "Expected Uint8Array backed by ArrayBuffer");
+		 return false;
+	 }
+	 v8::Local<v8::ArrayBuffer> ab = arr->Buffer();
+	 if (ab.IsEmpty() || ab->ByteLength() < arr->ByteOffset() + arr->ByteLength()) {
+		 Throw(v8::Isolate::GetCurrent(), "Invalid ArrayBuffer or view bounds");
+		 return false;
+	 }
+	*data = static_cast<char*>(ab->GetContents().Data()) + arr->ByteOffset();
+	*length = arr->ByteLength();
+	return true;
+}
+
+
 // --- Async Contexts ---
 struct AsyncContext {
 	Fiber* fiber;
 	AsyncContext(Fiber* f) : fiber(f) {}
 	virtual ~AsyncContext() {} // Virtual destructor for safe cleanup
 
-	// Resumes the fiber with a non-error value
 	void Resume(v8::Local<v8::Value> value) {
 		fiber->resume_value.Reset(fiber->isolate(), value);
 		Fiber::resume(fiber);
 	}
-	// Resumes the fiber with an error
 	void ResumeError(int err, const char* syscall, const char* path = nullptr) {
 		v8::Isolate* isolate = fiber->isolate();
 		v8::HandleScope handle_scope(isolate);
 		std::string msg = std::string(syscall) + " " + uv_strerror(err);
-		if (path) {
-			msg += " (" + std::string(path) + ")";
-		}
+		if (path) { msg += " (" + std::string(path) + ")"; }
 		v8::Local<v8::Value> error = v8::Exception::Error(v8::String::NewFromUtf8(isolate, msg.c_str()).ToLocalChecked());
 		fiber->resume_value.Reset(isolate, error);
 		Fiber::resume(fiber);
 	}
-	// Resumes the fiber with a string-based error
 	void ResumeError(const char* message) {
 		v8::Isolate* isolate = fiber->isolate();
 		v8::HandleScope handle_scope(isolate);
@@ -79,4 +94,11 @@ struct AsyncContext {
 	}
 };
 
+// --- Forward Declarations ---
+void NET_Poll(const v8::FunctionCallbackInfo<v8::Value>& args); // From net, used by tls
+void HANDLES_Free(const v8::FunctionCallbackInfo<v8::Value>& args); // Generic free
+void InitializeHandles(v8::Isolate* isolate, v8::Local<v8::Object> exports);
+
+
 #endif // PRIMITIVES_H
+

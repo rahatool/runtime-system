@@ -218,6 +218,7 @@ This is the stable, user-facing API.
 ## future works
 ```js:runtime.js
 let loadedExtensions = new Map();
+let importMap = new Map();
 import.meta.resolver = (path, from/base) => {
 	if (loadedExtensions.has(path)) {
 		return loadedExtensions.get(path);
