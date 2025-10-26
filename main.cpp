@@ -16,13 +16,13 @@
 
 // Forward declarations for primitives
 void InitializeFS(v8::Isolate* isolate, v8::Local<v8::Object> exports);
-void InitializeTCP(v8::Isolate* isolate, v8::Local<v8::Object> exports); // Renamed
-void InitializeUDP(v8::Isolate* isolate, v8::Local<v8::Object> exports); // Renamed
+void InitializeTCP(v8::Isolate* isolate, v8::Local<v8::Object> exports);
+void InitializeUDP(v8::Isolate* isolate, v8::Local<v8::Object> exports);
 void InitializeDNS(v8::Isolate* isolate, v8::Local<v8::Object> exports);
 void InitializeTLS(v8::Isolate* isolate, v8::Local<v8::Object> exports);
-void InitializeFibers(v8::Isolate* isolate, v8::Local<v8::Object> exports);
 void InitializeEncoding(v8::Isolate* isolate, v8::Local<v8::Object> exports);
-// void InitializeHandles(v8::Isolate* isolate, v8::Local<v8::Object> exports); // Already declared in primitives.h
+void InitializeFibers(v8::Isolate* isolate, v8::Local<v8::Object> exports);
+void InitializeHandles(v8::Isolate* isolate, v8::Local<v8::Object> exports);
 
 #include "module_loader.inc"
 
@@ -74,13 +74,13 @@ int main(int argc, char* argv[]) {
 		// Create the single __primordials object
 		v8::Local<v8::Object> primordials = v8::Object::New(isolate);
 		InitializeFS(isolate, primordials);
-		InitializeTCP(isolate, primordials); // Renamed
-		InitializeUDP(isolate, primordials); // Renamed
+		InitializeTCP(isolate, primordials);
+		InitializeUDP(isolate, primordials);
 		InitializeDNS(isolate, primordials);
 		InitializeTLS(isolate, primordials);
-		InitializeFibers(isolate, primordials);
 		InitializeEncoding(isolate, primordials);
-		InitializeHandles(isolate, primordials); // Added
+		InitializeFibers(isolate, primordials);
+		InitializeHandles(isolate, primordials); // Exposes handles.free
 
 		context->Global()->Set(context, v8::String::NewFromUtf8(isolate, "__primordials").ToLocalChecked(), primordials).Check();
 		

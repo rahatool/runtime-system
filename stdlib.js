@@ -15,12 +15,9 @@ export { _TextEncoder as TextEncoder };
 export { _TextDecoder as TextDecoder };
 const textEncoder = new _TextEncoder();
 
-// Changed String.prototype.bytes to a function for consistency.
-// Example: "hello".bytes()
 String.prototype.bytes = function() {
 	return textEncoder.encode(this.toString());
 };
-
 
 // --- Handle Cleanup ---
 const handleRegistry = new FinalizationRegistry((id) => {
@@ -30,7 +27,6 @@ const handleRegistry = new FinalizationRegistry((id) => {
 // --- Base class for external resources ---
 class ExternalResource {
 	constructor(id) {
-		// Simplified check: must be a BigInt and greater than 0n
 		if (typeof id !== 'bigint' || id <= 0n) {
 			 throw new Error("Handle ID must be a positive BigInt");
 		}
@@ -40,62 +36,74 @@ class ExternalResource {
 	_unregister() {
 		handleRegistry.unregister(this);
 	}
-	// Base close implementation now performs safe unregistering.
-	// Subclasses needing custom primitive calls must override this method.
+	// Base close unregisters. Subclasses needing explicit C++ close call override this.
 	close() { this._unregister(); }
 }
 
 // --- Filesystem ---
 export class FileHandle extends ExternalResource {
-	// Changed signature to accept a single options object
-	static open(path, options = {}) {
-		const { flags = 'r', mode = 0o666 } = options;
+	// Deno-style options object
+	static open(path, options = { read: true }) {
+		const { read = false, write = false, append = false, create = false, truncate = false, mode = 0o666 } = options;
 		
-		// POSIX flags: O_RDONLY=0, O_WRONLY=1, O_RDWR=2, O_CREAT=64, O_TRUNC=512, O_APPEND=1024
-		const flagMap = {
-			'r': 0, // O_RDONLY
-			'w': 1 | 64 | 512, // O_WRONLY | O_CREAT | O_TRUNC
-			'a': 1 | 64 | 1024, // O_WRONLY | O_CREAT | O_APPEND
-			'r+': 2, // O_RDWR
-			'w+': 2 | 64 | 512, // O_RDWR | O_CREAT | O_TRUNC
-			'a+': 2 | 64 | 1024, // O_RDWR | O_CREAT | O_APPEND
-		};
-		const jsFlags = flagMap[flags];
-
-		if (jsFlags === undefined) {
-			throw new Error(`Unsupported file open flag: ${flags}`);
-		}
-
-		const id = primordials.fs.open(path, jsFlags, mode);
+		let flags = 0;
+		if (read && write) flags |= 2;      // O_RDWR
+		else if (read) flags |= 0;           // O_RDONLY
+		else if (write || append) flags |= 1;// O_WRONLY (required for append/truncate/create)
+		
+		if (append) flags |= 1024;           // O_APPEND
+		if (create) flags |= 64;             // O_CREAT
+		if (truncate) flags |= 512;          // O_TRUNC
+		
+		const id = primordials.fs.open(path, flags, mode);
 		return new FileHandle(id);
 	}
-	static unlink(path) {
-		primordials.fs.unlink(path);
+	// Renamed from unlink
+	static remove(path) {
+		primordials.fs.remove(path);
+	}
+	// Reads entire file content as Uint8Array
+	static readAll(path) {
+		const file = FileHandle.open(path, { read: true });
+		try {
+			const stat = file.status();
+			const buffer = new Uint8Array(Number(stat.size)); // Size is BigInt, convert
+			let totalRead = 0n;
+			while (totalRead < stat.size) {
+				const currentRead = file.read(buffer.subarray(Number(totalRead)), Number(totalRead));
+				if (currentRead === null) break; // EOF unexpected?
+				totalRead += currentRead;
+			}
+			return buffer;
+		} finally {
+			file.close();
+		}
 	}
 
-	// Returns BigInt bytes read
+	// Returns BigInt bytes read or null on EOF
 	read(buffer, position = -1) {
 		const offset = BigInt(position);
-		const bytesRead = primordials.fs.read(this.id, buffer, offset);
-		if (bytesRead === null) return null; // EOF
-		return bytesRead; // Retained as BigInt
+		return primordials.fs.read(this.id, buffer, offset);
 	}
 	// Returns BigInt bytes written
 	write(buffer, position = -1) {
 		const offset = BigInt(position);
-		const bytesWritten = primordials.fs.write(this.id, buffer, offset);
-		return bytesWritten; // Retained as BigInt
+		return primordials.fs.write(this.id, buffer, offset);
 	}
+	// Renamed from fstat
 	status() { return primordials.fs.status(this.id); }
+	// Renamed from fsync
 	sync() { return primordials.fs.sync(this.id); }
+	// Renamed from fdatasync
 	dataSync() { return primordials.fs.dataSync(this.id); }
+	// Overrides base close to call primitive
 	close() { this._unregister(); return primordials.fs.close(this.id); }
-	// Synchronous iterator for reading file contents
+	
 	 *[Symbol.iterator](chunkSize = 65536) {
 		 const buffer = new Uint8Array(chunkSize);
 		 try {
 			 while(true) {
-				 // Note: Calling read without position allows the internal file pointer to advance
+				 // Read using current file pointer
 				 const bytesRead = this.read(buffer);
 				 if (bytesRead === null) break; // EOF
 				 if (bytesRead > 0n) {
@@ -113,20 +121,23 @@ export class DirectoryHandle extends ExternalResource {
 		const id = primordials.fs.dirOpen(path);
 		return new DirectoryHandle(id);
 	}
+	// Renamed from dirMake
 	static make(path, mode = 0o777) {
 		primordials.fs.dirMake(path, mode);
 	}
+	// Renamed from dirRemove
 	static remove(path) {
 		primordials.fs.dirRemove(path);
 	}
 
+	// Renamed from dirRead
 	read() {
 		// Primitive returns array of { name: string, type: number } or null
 		return primordials.fs.dirRead(this.id);
 	}
+	// Overrides base close
 	close() { this._unregister(); return primordials.fs.dirClose(this.id); }
 
-	// Synchronous iterator for directory entries
 	*[Symbol.iterator]() {
 		try {
 			while (true) {
@@ -135,7 +146,6 @@ export class DirectoryHandle extends ExternalResource {
 				yield* entries;
 			}
 		} finally {
-			 // Close implicitly when iterator finishes or breaks
 			 this.close();
 		}
 	}
@@ -157,20 +167,18 @@ export class TCPSocket extends ExternalResource {
 		return new TCPSocket(id);
 	}
 
-	// Simplified read: Reads into the provided Uint8Array view. Returns BigInt bytes read.
 	read(buffer) {
 		const bytesRead = primordials.tcp.read(this.id, buffer);
 		if (bytesRead === null) return null; // EOF
 		return bytesRead; // Retained as BigInt
 	}
-	// Simplified write: Writes the provided Uint8Array view. Returns BigInt bytes written.
 	write(buffer) { // Expects Uint8Array (use string.bytes())
 		const bytesWritten = primordials.tcp.write(this.id, buffer);
 		return bytesWritten; // Retained as BigInt
 	}
+	// Overrides base close
 	close() { this._unregister(); primordials.tcp.close(this.id); }
 
-	// Synchronous iterator for reading data chunks
 	*[Symbol.iterator](chunkSize = 65536) {
 		 const buffer = new Uint8Array(chunkSize);
 		 try {
@@ -183,7 +191,7 @@ export class TCPSocket extends ExternalResource {
 			 }
 		 } catch (e) {
 			 console.log(`TCP Socket read error: ${e.message}`);
-			 throw e;
+			 // Don't re-throw, just end iteration
 		 }
 	}
 }
@@ -196,13 +204,9 @@ export class TCPServer extends ExternalResource {
 		return new TCPServer(id);
 	}
 
-	constructor(id) { super(id); } // Store the server handle ID
-
-	// Synchronous iterator for accepting connections
 	*[Symbol.iterator]() {
 		try {
 			while(true) {
-				// Accept blocks the fiber until a connection is ready
 				const clientId = primordials.tcp.accept(this.id);
 				if (clientId < 0n) {
 					 console.log(`TCP Accept error: ${clientId}`);
@@ -214,12 +218,13 @@ export class TCPServer extends ExternalResource {
 			this.close();
 		}
 	}
+	// Overrides base close
 	close() { this._unregister(); primordials.tcp.close(this.id); }
 }
 
 // --- Dgram (UDP) ---
 export class UDPSocket extends ExternalResource {
-	// Factory method
+	// Factory method - Renamed from listen
 	static listen(port, host = '0.0.0.0') {
 		 const id = primordials.udp.create();
 		 primordials.udp.listen(id, host, port);
@@ -233,31 +238,29 @@ export class UDPSocket extends ExternalResource {
 	}
 	// Renamed from recv
 	read(buffer) {
-		// Primitive returns { bytes: BigInt, remote: { host: string, port: number } } or null
-		const result = primordials.udp.read(this.id, buffer);
-		if (result === null) return null;
-		// remote port is a standard Number, but bytes is now retained as BigInt
-		return { bytes: result.bytes, remote: result.remote };
+		// Primitive returns { bytes: BigInt, host: string, port: number } or null
+		return primordials.udp.read(this.id, buffer);
 	}
+	// Overrides base close
 	close() { this._unregister(); primordials.udp.close(this.id); }
 
-	// Synchronous iterator for reading datagrams
 	 *[Symbol.iterator](bufferSize = 65536) {
 		 const buffer = new Uint8Array(bufferSize);
 		 try {
 			 while(true) {
 				 const result = this.read(buffer);
-				 if (result === null) break;
+				 if (result === null) break; // Socket closed?
 				 if (result.bytes > 0n) {
 					 yield {
-						 data: buffer.slice(0, Number(result.bytes)), // Convert BigInt to Number for slicing
-						 remote: result.remote
+						 // Use subarray instead of slice
+						 data: buffer.subarray(0, Number(result.bytes)),
+						 host: result.host,
+						 port: result.port
 					 };
 				 }
 			 }
 		 } catch(e) {
 			  console.log(`UDP read error: ${e.message}`);
-			  throw e;
 		 }
 	}
 }
@@ -279,8 +282,10 @@ export class TLSSocket extends ExternalResource {
 	 static connect(host, port, options = {}) {
 		const tcpSocket = TCPSocket.connect(host, port);
 		try {
+			// Pass the tcpSocket.id (a BigInt) to the primitive
 			const id = primordials.tls.connect(tcpSocket.id, host);
 			 const tlsSocket = new TLSSocket(id);
+			 // Store the underlying socket ID to close it later
 			 tlsSocket._tcpSocketId = tcpSocket.id;
 			 return tlsSocket;
 		} catch (e) {
@@ -289,104 +294,100 @@ export class TLSSocket extends ExternalResource {
 		}
 	}
 
-	// Simplified read (no offset/length). Returns BigInt bytes read.
 	read(buffer) {
 		const bytesRead = primordials.tls.read(this.id, buffer);
-		if (bytesRead === null) return null;
+		if (bytesRead === null) return null; // EOF or error
 		return bytesRead; // Retained as BigInt
 	}
-	// Simplified write (no offset/length). Returns BigInt bytes written.
 	write(buffer) { // Expects Uint8Array
 		const bytesWritten = primordials.tls.write(this.id, buffer);
 		return bytesWritten; // Retained as BigInt
 	}
+	// Overrides base close
 	close() {
 		this._unregister();
-		primordials.tls.close(this.id);
-		// Close underlying TCP socket
+		try {
+			primordials.tls.close(this.id); // Closes SSL* layer
+		} catch(e) {
+			 console.log(`TLS close error: ${e.message}`);
+		}
+		// Also close the underlying TCP socket
 		if (this._tcpSocketId) {
 			 try { primordials.tcp.close(this._tcpSocketId); }
 			 catch(e) { /* Ignore errors closing underlying socket */ }
 		}
 	}
-	 // Synchronous iterator for reading data chunks
 	 *[Symbol.iterator](chunkSize = 16384) {
 		 const buffer = new Uint8Array(chunkSize);
 		 try {
 			 while(true) {
 				 const bytesRead = this.read(buffer);
-				 if (bytesRead === null) break;
+				 if (bytesRead === null) break; // EOF or error
 				 if (bytesRead > 0n) {
-					yield buffer.subarray(0, Number(bytesRead)); // Convert BigInt to Number for subarray
+					yield buffer.subarray(0, Number(bytesRead));
 				 }
 			 }
 		 } catch(e) {
 			 console.log(`TLS read error: ${e.message}`);
-			 throw e;
 		 }
 	}
 }
 
-// TLSServer now extends ExternalResource to manage the TLS Context pointer
+// TLSServer manages the TLSContextHandle
 export class TLSServer extends ExternalResource {
 	 // Factory method - Takes resolver, port, host
 	 static listen(certificateResolver, port, host = '0.0.0.0') {
-		 if (typeof certificateResolver !== 'function') throw new Error("TLSServer.listen requires a certificateResolver function");
+		 if (typeof certificateResolver !== 'function') {
+			 throw new Error("TLSServer.listen requires a certificateResolver function");
+		 }
 
-		 // 1. Wrap the JS resolver (moved from constructor)
 		 const internalResolver = (servername) => {
 			 const result = certificateResolver(servername);
 			 if (!result || !(result.key instanceof KeyHandle) || !(result.cert instanceof CertHandle)) {
 				  throw new Error("certificateResolver must return { key: KeyHandle, cert: CertHandle }");
 			 }
+			 // Pass BigInt IDs to C++
 			 return { key: result.key.id, cert: result.cert.id };
 		 };
 
-		 // 2. Create the C++ context pointer (this becomes the ExternalResource ID)
-		 const tls_context_ptr_id = primordials.tls.createContext(internalResolver);
-
-		 // 3. Start the underlying TCP Server (moved from iterator/constructor check)
-		 const tcpServer = TCPServer.listen(port, host);
+		 const tls_context_id = primordials.tls.createContext(internalResolver);
+		 const tcpServer = TCPServer.listen(port, host); // Use the existing factory
 
 		 console.log(`TLS Server listening on ${host}:${port}`);
-		 // Pass context ptr ID and tcpServer instance to constructor
-		 return new TLSServer(tls_context_ptr_id, tcpServer);
+		 return new TLSServer(tls_context_id, tcpServer);
 	 }
 
-	 constructor(tls_context_ptr_id, tcpServer) {
-		// Use the C++ TLS context pointer as the ExternalResource ID
-		super(tls_context_ptr_id);
+	 constructor(tls_context_id, tcpServer) {
+		super(tls_context_id); // This ID is the TLSContextHandle
 		this._tcpServer = tcpServer; // Store the TCPServer instance
 	 }
 
-	 // Synchronous iterator for accepting connections
 	 *[Symbol.iterator]() {
 		 try {
 			 // Iterate over incoming TCP connections from the underlying TCPServer
 			 for (const tcpSocket of this._tcpServer) {
 				  let tlsSocket = null;
 				  try {
-					  // Perform TLS handshake (blocks fiber). Use this.id (context ptr)
+					  // this.id is the tls_context_id
 					  const tlsSocketId = primordials.tls.accept(this.id, tcpSocket.id);
 					  tlsSocket = new TLSSocket(tlsSocketId);
-					  tlsSocket._tcpSocketId = tcpSocket.id;
+					  tlsSocket._tcpSocketId = tcpSocket.id; // Give it the underlying ID
 					  yield tlsSocket;
 				  } catch (e) {
-					  console.log(`TLS Handshake Error: ${e.message} ${e.stack}`);
-					  tcpSocket.close(); // Close underlying TCP on failure
+					  console.log(`TLS Handshake Error: ${e.message}`);
+					  tcpSocket.close();
 				  }
 			 }
 		 } finally {
-			  // TCPServer's iterator close handles the underlying server.
-			  // Explicitly close the TLS context here.
 			  this.close();
 		 }
 	 }
-	 // Explicit close method to free context and close TCP server
+	 
+	 // Overrides base close
 	 close() {
-		 this._unregister(); // Unregister the TLS context pointer
-		 // Explicitly call the primitive to free the C++ TLSContext object
-		 primordials.tls.freeContext(this.id);
+		 this._unregister(); // Unregisters the TLSContextHandle
+		 // FinalizationRegistry will call primordials.handles.free(this.id) eventually
+		 
 		 if (this._tcpServer) {
 			 this._tcpServer.close();
 		 }
@@ -400,3 +401,4 @@ globalThis.console = {
 		print(msg);
 	}
 };
+
