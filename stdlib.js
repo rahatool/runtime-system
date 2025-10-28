@@ -3,7 +3,7 @@ if (!primordials) throw new Error("Fatal: primordials not found.");
 
 // --- Fiber Control ---
 export const Fiber = {
-	run: primordials.fiber.run,
+	run: primordials.fiber.run, // No longer returns a Promise
 	current: primordials.fiber.current,
 	sleep: (ms) => primordials.fiber.sleep(BigInt(ms)),
 };
@@ -36,51 +36,109 @@ class ExternalResource {
 	_unregister() {
 		handleRegistry.unregister(this);
 	}
-	// Base close unregisters. Subclasses needing explicit C++ close call override this.
+	// Base close unregisters.
 	close() { this._unregister(); }
+
+	// Implement explicit resource management symbol
+	[Symbol.dispose]() {
+		this.close();
+	}
+}
+
+// --- Base Class for Stream I/O ---
+class StreamHandle extends ExternalResource {
+	/**
+	 * Reads all data from the stream until EOF.
+	 * This method repeatedly calls .read() and concatenates the chunks.
+	 * @returns {Uint8Array} A new buffer containing all data.
+	 */
+	readAll() {
+		const chunks = [];
+		const buffer = new Uint8Array(65536); // Re-usable read buffer
+		let totalBytes = 0;
+
+		while(true) {
+			const bytesRead = this.read(buffer); // Call the instance's read method
+			if (bytesRead === -1n) break; // EOF is -1n
+			if (bytesRead > 0n) {
+				// Use slice() to create a new, copied chunk
+				chunks.push(buffer.slice(0, Number(bytesRead)));
+				totalBytes += Number(bytesRead);
+			}
+		}
+
+		// Concatenate all chunks into one new buffer
+		const result = new Uint8Array(totalBytes);
+		let offset = 0;
+		for (const chunk of chunks) {
+			result.set(chunk, offset);
+			offset += chunk.length;
+		}
+		return result;
+	}
+
+	/**
+	 * Writes all data from the buffer to the stream.
+	 * This method repeatedly calls .write() until the buffer is fully sent.
+	 * @param {Uint8Array} buffer The buffer to write.
+	 * @returns {BigInt} The total number of bytes written.
+	 */
+	writeAll(buffer) {
+		let totalWritten = 0n;
+		const totalLength = BigInt(buffer.length);
+		while (totalWritten < totalLength) {
+			// Use subarray for the remaining part (this is a view, which is efficient)
+			const bytesWritten = this.write(buffer.subarray(Number(totalWritten)));
+			if (bytesWritten === null || bytesWritten < 0n) { // Check for errors/closure
+				throw new Error("Write failed, stream closed prematurely or error occurred");
+			}
+			totalWritten += bytesWritten;
+		}
+		return totalWritten;
+	}
+
+	*[Symbol.iterator](chunkSize = 65536) {
+		 const buffer = new Uint8Array(chunkSize);
+		 try {
+			 while(true) {
+				 // Read using current file pointer or stream
+				 const bytesRead = this.read(buffer);
+				 if (bytesRead === -1n) break; // EOF is -1n
+				 if (bytesRead > 0n) {
+					yield buffer.subarray(0, Number(bytesRead));
+				 }
+			 }
+		 } catch (e) {
+			 console.log(`Stream read error: ${e.message}`);
+		 }
+	}
 }
 
 // --- Filesystem ---
-export class FileHandle extends ExternalResource {
+export class FileHandle extends StreamHandle {
 	// Deno-style options object
-	static open(path, options = { read: true }) {
-		const { read = false, write = false, append = false, create = false, truncate = false, mode = 0o666 } = options;
-		
+	static open(path, options = {}) { // Default options to {}
+		const { read = true, write = false, append = false, create = false, truncate = false, mode = 0o666 } = options; // Default read to true
+
 		let flags = 0;
+		// POSIX flags
 		if (read && write) flags |= 2;      // O_RDWR
 		else if (read) flags |= 0;           // O_RDONLY
-		else if (write || append) flags |= 1;// O_WRONLY (required for append/truncate/create)
-		
+		else if (write || append) flags |= 1;// O_WRONLY
+
 		if (append) flags |= 1024;           // O_APPEND
 		if (create) flags |= 64;             // O_CREAT
 		if (truncate) flags |= 512;          // O_TRUNC
-		
+
 		const id = primordials.fs.open(path, flags, mode);
 		return new FileHandle(id);
 	}
-	// Renamed from unlink
+
 	static remove(path) {
 		primordials.fs.remove(path);
 	}
-	// Reads entire file content as Uint8Array
-	static readAll(path) {
-		const file = FileHandle.open(path, { read: true });
-		try {
-			const stat = file.status();
-			const buffer = new Uint8Array(Number(stat.size)); // Size is BigInt, convert
-			let totalRead = 0n;
-			while (totalRead < stat.size) {
-				const currentRead = file.read(buffer.subarray(Number(totalRead)), Number(totalRead));
-				if (currentRead === null) break; // EOF unexpected?
-				totalRead += currentRead;
-			}
-			return buffer;
-		} finally {
-			file.close();
-		}
-	}
 
-	// Returns BigInt bytes read or null on EOF
+	// Returns BigInt bytes read or -1n on EOF
 	read(buffer, position = -1) {
 		const offset = BigInt(position);
 		return primordials.fs.read(this.id, buffer, offset);
@@ -90,29 +148,15 @@ export class FileHandle extends ExternalResource {
 		const offset = BigInt(position);
 		return primordials.fs.write(this.id, buffer, offset);
 	}
-	// Renamed from fstat
+
 	status() { return primordials.fs.status(this.id); }
-	// Renamed from fsync
 	sync() { return primordials.fs.sync(this.id); }
-	// Renamed from fdatasync
 	dataSync() { return primordials.fs.dataSync(this.id); }
+
 	// Overrides base close to call primitive
-	close() { this._unregister(); return primordials.fs.close(this.id); }
-	
-	 *[Symbol.iterator](chunkSize = 65536) {
-		 const buffer = new Uint8Array(chunkSize);
-		 try {
-			 while(true) {
-				 // Read using current file pointer
-				 const bytesRead = this.read(buffer);
-				 if (bytesRead === null) break; // EOF
-				 if (bytesRead > 0n) {
-					yield buffer.subarray(0, Number(bytesRead));
-				 }
-			 }
-		 } finally {
-			 this.close();
-		 }
+	close() {
+		this._unregister();
+		return primordials.fs.close(this.id);
 	}
 }
 
@@ -121,32 +165,27 @@ export class DirectoryHandle extends ExternalResource {
 		const id = primordials.fs.dirOpen(path);
 		return new DirectoryHandle(id);
 	}
-	// Renamed from dirMake
+
 	static make(path, mode = 0o777) {
 		primordials.fs.dirMake(path, mode);
 	}
-	// Renamed from dirRemove
+
 	static remove(path) {
 		primordials.fs.dirRemove(path);
 	}
 
-	// Renamed from dirRead
 	read() {
-		// Primitive returns array of { name: string, type: number } or null
+		// Primitive returns { name: string, type: number } or null
 		return primordials.fs.dirRead(this.id);
 	}
-	// Overrides base close
+
 	close() { this._unregister(); return primordials.fs.dirClose(this.id); }
 
 	*[Symbol.iterator]() {
-		try {
-			while (true) {
-				const entries = this.read();
-				if (entries === null) break;
-				yield* entries;
-			}
-		} finally {
-			 this.close();
+		while (true) {
+			const entry = this.read();
+			if (entry === null) break;
+			yield entry;
 		}
 	}
 }
@@ -154,46 +193,31 @@ export class DirectoryHandle extends ExternalResource {
 // --- DNS ---
 export const dns = {
 	resolve: (hostname, rrtype = 'A') => {
-		// Primitive returns parsed JS object or throws
 		return primordials.dns.resolve(hostname, rrtype);
 	},
 };
 
 // --- Networking (TCP) ---
-export class TCPSocket extends ExternalResource {
+export class TCPSocket extends StreamHandle {
 	// Factory method
 	static connect(host, port) {
 		const id = primordials.tcp.connect(host, port);
 		return new TCPSocket(id);
 	}
 
+	// Returns BigInt bytes read or -1n on EOF
 	read(buffer) {
 		const bytesRead = primordials.tcp.read(this.id, buffer);
-		if (bytesRead === null) return null; // EOF
-		return bytesRead; // Retained as BigInt
+		// Note: TCP_Read primitive already returns -1n for EOF
+		return bytesRead;
 	}
-	write(buffer) { // Expects Uint8Array (use string.bytes())
+	// Returns BigInt bytes written
+	write(buffer) { // Expects Uint8Array
 		const bytesWritten = primordials.tcp.write(this.id, buffer);
-		return bytesWritten; // Retained as BigInt
+		return bytesWritten;
 	}
-	// Overrides base close
-	close() { this._unregister(); primordials.tcp.close(this.id); }
 
-	*[Symbol.iterator](chunkSize = 65536) {
-		 const buffer = new Uint8Array(chunkSize);
-		 try {
-			 while(true) {
-				 const bytesRead = this.read(buffer);
-				 if (bytesRead === null) break; // EOF
-				 if (bytesRead > 0n) {
-					yield buffer.subarray(0, Number(bytesRead));
-				 }
-			 }
-		 } catch (e) {
-			 console.log(`TCP Socket read error: ${e.message}`);
-			 // Don't re-throw, just end iteration
-		 }
-	}
+	close() { this._unregister(); primordials.tcp.close(this.id); }
 }
 
 export class TCPServer extends ExternalResource {
@@ -214,17 +238,16 @@ export class TCPServer extends ExternalResource {
 				}
 				yield new TCPSocket(clientId);
 			}
-		} finally {
-			this.close();
+		} catch (e) {
+			console.log(`TCP Server error: ${e.message}`);
 		}
 	}
-	// Overrides base close
+
 	close() { this._unregister(); primordials.tcp.close(this.id); }
 }
 
 // --- Dgram (UDP) ---
 export class UDPSocket extends ExternalResource {
-	// Factory method - Renamed from listen
 	static listen(port, host = '0.0.0.0') {
 		 const id = primordials.udp.create();
 		 primordials.udp.listen(id, host, port);
@@ -232,16 +255,15 @@ export class UDPSocket extends ExternalResource {
 		 return new UDPSocket(id);
 	}
 
-	// Renamed from send
 	write(buffer, port, host) {
 		primordials.udp.write(this.id, buffer, host, port);
 	}
-	// Renamed from recv
+
+	// Returns { bytes: BigInt, host: string, port: number } or null
 	read(buffer) {
-		// Primitive returns { bytes: BigInt, host: string, port: number } or null
 		return primordials.udp.read(this.id, buffer);
 	}
-	// Overrides base close
+
 	close() { this._unregister(); primordials.udp.close(this.id); }
 
 	 *[Symbol.iterator](bufferSize = 65536) {
@@ -251,8 +273,8 @@ export class UDPSocket extends ExternalResource {
 				 const result = this.read(buffer);
 				 if (result === null) break; // Socket closed?
 				 if (result.bytes > 0n) {
+					 // Return object includes host and port directly
 					 yield {
-						 // Use subarray instead of slice
 						 data: buffer.subarray(0, Number(result.bytes)),
 						 host: result.host,
 						 port: result.port
@@ -277,33 +299,34 @@ export class CertHandle extends ExternalResource {
 	}
 }
 
-export class TLSSocket extends ExternalResource {
+export class TLSSocket extends StreamHandle {
 	 // Factory method
 	 static connect(host, port, options = {}) {
 		const tcpSocket = TCPSocket.connect(host, port);
 		try {
-			// Pass the tcpSocket.id (a BigInt) to the primitive
+			// We pass the tcpSocket *ID* to the connect primitive
 			const id = primordials.tls.connect(tcpSocket.id, host);
-			 const tlsSocket = new TLSSocket(id);
-			 // Store the underlying socket ID to close it later
-			 tlsSocket._tcpSocketId = tcpSocket.id;
-			 return tlsSocket;
+			const tlsSocket = new TLSSocket(id);
+			tlsSocket._tcpSocket = tcpSocket; // Store the JS object for closing
+			return tlsSocket;
 		} catch (e) {
 			tcpSocket.close();
 			throw e;
 		}
 	}
 
+	// Returns BigInt bytes read or -1n on EOF/Error
 	read(buffer) {
 		const bytesRead = primordials.tls.read(this.id, buffer);
-		if (bytesRead === null) return null; // EOF or error
-		return bytesRead; // Retained as BigInt
+		// Note: TLS_Read primitive returns -1n for EOF/Error
+		return bytesRead;
 	}
+	// Returns BigInt bytes written
 	write(buffer) { // Expects Uint8Array
 		const bytesWritten = primordials.tls.write(this.id, buffer);
-		return bytesWritten; // Retained as BigInt
+		return bytesWritten;
 	}
-	// Overrides base close
+
 	close() {
 		this._unregister();
 		try {
@@ -312,24 +335,10 @@ export class TLSSocket extends ExternalResource {
 			 console.log(`TLS close error: ${e.message}`);
 		}
 		// Also close the underlying TCP socket
-		if (this._tcpSocketId) {
-			 try { primordials.tcp.close(this._tcpSocketId); }
+		if (this._tcpSocket) {
+			 try { this._tcpSocket.close(); }
 			 catch(e) { /* Ignore errors closing underlying socket */ }
 		}
-	}
-	 *[Symbol.iterator](chunkSize = 16384) {
-		 const buffer = new Uint8Array(chunkSize);
-		 try {
-			 while(true) {
-				 const bytesRead = this.read(buffer);
-				 if (bytesRead === null) break; // EOF or error
-				 if (bytesRead > 0n) {
-					yield buffer.subarray(0, Number(bytesRead));
-				 }
-			 }
-		 } catch(e) {
-			 console.log(`TLS read error: ${e.message}`);
-		 }
 	}
 }
 
@@ -346,12 +355,21 @@ export class TLSServer extends ExternalResource {
 			 if (!result || !(result.key instanceof KeyHandle) || !(result.cert instanceof CertHandle)) {
 				  throw new Error("certificateResolver must return { key: KeyHandle, cert: CertHandle }");
 			 }
-			 // Pass BigInt IDs to C++
+			 // Pass the BigInt IDs to C++
 			 return { key: result.key.id, cert: result.cert.id };
 		 };
 
+		 // 1. Create the C++ TLS Context (returns a handle ID)
 		 const tls_context_id = primordials.tls.createContext(internalResolver);
-		 const tcpServer = TCPServer.listen(port, host); // Use the existing factory
+		 let tcpServer;
+		 try {
+			 // 2. Create the underlying TCP Server
+			 tcpServer = TCPServer.listen(port, host); // Use the existing factory
+		 } catch(e) {
+			 // If TCP listen fails, free the TLS context we just made
+			 primordials.handles.free(tls_context_id);
+			 throw e;
+		 }
 
 		 console.log(`TLS Server listening on ${host}:${port}`);
 		 return new TLSServer(tls_context_id, tcpServer);
@@ -366,28 +384,26 @@ export class TLSServer extends ExternalResource {
 		 try {
 			 // Iterate over incoming TCP connections from the underlying TCPServer
 			 for (const tcpSocket of this._tcpServer) {
-				  let tlsSocket = null;
 				  try {
-					  // this.id is the tls_context_id
+					  // this.id is the tls_context_id, tcpSocket.id is the net_handle_id
 					  const tlsSocketId = primordials.tls.accept(this.id, tcpSocket.id);
-					  tlsSocket = new TLSSocket(tlsSocketId);
-					  tlsSocket._tcpSocketId = tcpSocket.id; // Give it the underlying ID
+					  const tlsSocket = new TLSSocket(tlsSocketId);
+					  tlsSocket._tcpSocket = tcpSocket; // Store JS object for closing
 					  yield tlsSocket;
 				  } catch (e) {
 					  console.log(`TLS Handshake Error: ${e.message}`);
-					  tcpSocket.close();
+					  tcpSocket.close(); // Close the underlying TCP socket on handshake failure
 				  }
 			 }
-		 } finally {
-			  this.close();
+		 } catch (e) {
+			  console.log(`TLS Server error: ${e.message}`);
 		 }
 	 }
-	 
-	 // Overrides base close
+
 	 close() {
 		 this._unregister(); // Unregisters the TLSContextHandle
-		 // FinalizationRegistry will call primordials.handles.free(this.id) eventually
-		 
+		 // FinalizationRegistry will call primordials.handles.free(this.id)
+
 		 if (this._tcpServer) {
 			 this._tcpServer.close();
 		 }

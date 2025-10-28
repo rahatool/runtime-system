@@ -6,28 +6,31 @@
 // openssl s_client -connect localhost:8443 -crlf -servername a.example.com
 // openssl s_client -connect localhost:8443 -crlf -servername b.example.com
 
-// Note: Use 'export { ... }' pattern now
 import { Fiber, FileHandle, DirectoryHandle, dns, TCPServer, UDPSocket, TLSServer, KeyHandle, CertHandle, TextDecoder } from './stdlib.js';
 
 console.log("--- Advanced Runtime Starting (Full DNS, FS, SNI) ---");
 
-// --- Pre-load certs using new FileHandle API ---
-function loadPem(path) {
-	// Use static readAll method
-	return FileHandle.readAll(path);
+// --- Pre-load certs using FileHandle.open().readAll() ---
+// No 'using' needed here, as readAll opens, reads, and implicitly closes (via GC)
+let certificates;
+try {
+	certificates = {
+		'a.example.com': {
+			key: new KeyHandle(FileHandle.open('./a.key').readAll()),
+			cert: new CertHandle(FileHandle.open('./a.crt').readAll()),
+		},
+		'b.example.com': {
+			key: new KeyHandle(FileHandle.open('./b.key').readAll()),
+			cert: new CertHandle(FileHandle.open('./b.crt').readAll()),
+		}
+	};
+	console.log("Loaded certificates for: a.example.com, b.example.com");
+} catch (e) {
+	console.log(`Failed to load certificates: ${e.message}`);
+	console.log("Make sure 'a.key', 'a.crt', 'b.key', and 'b.crt' exist.");
+	// Exit or handle appropriately
 }
 
-const certificates = {
-	'a.example.com': {
-		key: new KeyHandle(loadPem('./a.key')),
-		cert: new CertHandle(loadPem('./a.crt')),
-	},
-	'b.example.com': {
-		key: new KeyHandle(loadPem('./b.key')),
-		cert: new CertHandle(loadPem('./b.crt')),
-	}
-};
-console.log("Loaded certificates for: a.example.com, b.example.com");
 
 // --- This is the dynamic certificate resolver ---
 function certificateResolver(servername) {
@@ -42,7 +45,7 @@ function certificateResolver(servername) {
 }
 
 // --- Main Server Logic ---
-function main() {
+function main() { // No longer async
 	try {
 		console.log("Resolving 'google.com' MX records...");
 		const mx_records = dns.resolve('google.com', 'MX');
@@ -54,45 +57,48 @@ function main() {
 	} catch (e) {
 		console.log(`DNS lookup failed: ${e.message}`);
 	}
-	
+
 	try {
 		console.log("Reading directory '.' ...");
-		const dir = DirectoryHandle.open(".");
+		// Use `using` for automatic closing
+		using dir = DirectoryHandle.open(".");
 		for(const entry of dir) {
 			console.log(`  Found: ${entry.name} (type: ${entry.type})`);
-		} // dir.close() is called implicitly by iterator finally
+		}
+		// dir.close() called automatically by `using`
 	} catch(e) {
 		console.log(`fs.readdir failed: ${e.message}`);
 	}
 
 	// Run TCP server in a separate fiber
-	Fiber.run(() => {
+	Fiber.run(() => { // No longer async
 		try {
-			const server = TCPServer.listen(8080);
+			using server = TCPServer.listen(8080); // Use `using`
 			for (const socket of server) {
 				console.log("TCP connection accepted!");
-				Fiber.run(() => {
+				Fiber.run(() => { // No longer async
 					try {
-						for (const chunk of socket) {
-							socket.write("TCP> ".bytes());
-							socket.write(chunk);
+						using conn = socket; // Use `using`
+						for (const chunk of conn) {
+							conn.write("TCP> ".bytes());
+							conn.write(chunk);
 						}
 					} catch(e) {
 						console.log(`TCP socket error: ${e.message}`);
-					} finally {
-						socket.close();
 					}
+					// conn.close() called automatically
 				});
 			}
 		} catch(e) {
 			 console.log(`TCP Server Error: ${e.message}`);
 		}
+		// server.close() called automatically
 	});
-	
+
 	// Run UDP server in a separate fiber
-	Fiber.run(() => {
+	Fiber.run(() => { // No longer async
 		try {
-			const socket = UDPSocket.listen(8081);
+			using socket = UDPSocket.listen(8081); // Use `using`
 			for(const dgram of socket) {
 				console.log(`UDP datagram from ${dgram.host}:${dgram.port}`);
 				socket.write("UDP> ".bytes(), dgram.port, dgram.host);
@@ -101,37 +107,42 @@ function main() {
 		} catch (e) {
 			console.log(`UDP Socket Error: ${e.message}`);
 		}
+		// socket.close() called automatically
 	});
 
-	// Run TLS server in the main fiber
+	// Run TLS server in the main fiber (or another one)
 	try {
-		const server = TLSServer.listen(certificateResolver, 8443);
-		// This loop will block this fiber forever
-		for (const socket of server) {
+		if (!certificates) throw new Error("Certificates not loaded.");
+
+		using tlsServer = TLSServer.listen(certificateResolver, 8443); // Use `using`
+		// This loop will block this fiber forever (or until server.close() or error)
+		for (const socket of tlsServer) {
 			console.log("TLS connection accepted!");
-			// Handle each connection in its own new fiber
-			Fiber.run(() => {
+			// Handle each connection concurrently
+			Fiber.run(() => { // No longer async
 				try {
-					// Echo loop
-					for (const chunk of socket) {
+					using conn = socket; // Use `using`
+					for (const chunk of conn) {
 						console.log(`TLS Received: ${new TextDecoder().decode(chunk).trim()}`);
-						socket.write("TLS> ".bytes());
-						socket.write(chunk);
+						conn.write("TLS> ".bytes());
+						conn.write(chunk);
 					}
 				} catch(e) {
 					console.log(`TLS socket error: ${e.message}`);
 				} finally {
 					console.log("Closing TLS connection.");
-					socket.close();
+					// conn.close() called automatically by `using`
 				}
 			});
 		}
 	} catch (e) {
 		console.log(`TLS Server Error: ${e.message}\n${e.stack}`);
-		console.log("\nMake sure 'a.key'/'a.crt' and 'b.key'/'b.crt' exist.");
 	}
+	// tlsServer.close() called automatically by `using` only if the loop exits
+	// In reality, this server loop runs forever unless manually stopped or an error occurs.
 }
 
 // Run the main logic
 Fiber.run(main);
+// No need for .catch as Fiber.run no longer returns a Promise
 
