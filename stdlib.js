@@ -54,17 +54,13 @@ class StreamHandle extends ExternalResource {
 	 */
 	readAll() {
 		const chunks = [];
-		const buffer = new Uint8Array(65536); // Re-usable read buffer
 		let totalBytes = 0;
-
-		while(true) {
-			const bytesRead = this.read(buffer); // Call the instance's read method
-			if (bytesRead === -1n) break; // EOF is -1n
-			if (bytesRead > 0n) {
-				// Use slice() to create a new, copied chunk
-				chunks.push(buffer.slice(0, Number(bytesRead)));
-				totalBytes += Number(bytesRead);
-			}
+		// Use for...of on the iterator
+		for (const chunk of this) {
+			// chunk is a subarray view, which will be overwritten.
+			// We must make a copy using slice().
+			chunks.push(chunk.slice());
+			totalBytes += chunk.length;
 		}
 
 		// Concatenate all chunks into one new buffer
@@ -89,7 +85,7 @@ class StreamHandle extends ExternalResource {
 		while (totalWritten < totalLength) {
 			// Use subarray for the remaining part (this is a view, which is efficient)
 			const bytesWritten = this.write(buffer.subarray(Number(totalWritten)));
-			if (bytesWritten === null || bytesWritten < 0n) { // Check for errors/closure
+			if (bytesWritten === -1n) { // Check for errors/closure
 				throw new Error("Write failed, stream closed prematurely or error occurred");
 			}
 			totalWritten += bytesWritten;
@@ -105,6 +101,7 @@ class StreamHandle extends ExternalResource {
 				 const bytesRead = this.read(buffer);
 				 if (bytesRead === -1n) break; // EOF is -1n
 				 if (bytesRead > 0n) {
+					// yield a *view* (subarray) of the bytes read
 					yield buffer.subarray(0, Number(bytesRead));
 				 }
 			 }
@@ -118,7 +115,8 @@ class StreamHandle extends ExternalResource {
 export class FileHandle extends StreamHandle {
 	// Deno-style options object
 	static open(path, options = {}) { // Default options to {}
-		const { read = true, write = false, append = false, create = false, truncate = false, mode = 0o666 } = options; // Default read to true
+		// Default read to true
+		const { read = true, write = false, append = false, create = false, truncate = false, mode = 0o666 } = options;
 
 		let flags = 0;
 		// POSIX flags
@@ -208,7 +206,6 @@ export class TCPSocket extends StreamHandle {
 	// Returns BigInt bytes read or -1n on EOF
 	read(buffer) {
 		const bytesRead = primordials.tcp.read(this.id, buffer);
-		// Note: TCP_Read primitive already returns -1n for EOF
 		return bytesRead;
 	}
 	// Returns BigInt bytes written
@@ -271,7 +268,7 @@ export class UDPSocket extends ExternalResource {
 		 try {
 			 while(true) {
 				 const result = this.read(buffer);
-				 if (result === null) break; // Socket closed?
+				 if (result === null) break; // Socket closed
 				 if (result.bytes > 0n) {
 					 // Return object includes host and port directly
 					 yield {
@@ -318,7 +315,6 @@ export class TLSSocket extends StreamHandle {
 	// Returns BigInt bytes read or -1n on EOF/Error
 	read(buffer) {
 		const bytesRead = primordials.tls.read(this.id, buffer);
-		// Note: TLS_Read primitive returns -1n for EOF/Error
 		return bytesRead;
 	}
 	// Returns BigInt bytes written

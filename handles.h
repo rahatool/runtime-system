@@ -4,15 +4,19 @@
 #include <map>
 #include <memory>
 #include <queue>
+#include <vector>
 #include <openssl/ssl.h>
+#include <openssl/x509.h>
+#include <openssl/evp.h>
 #include "v8.h"
 #include "uv.h"
-#include "primitives.h" // For AsyncContext
+#include "fiber.h" // For AsyncContext
 
 // Base class for all C++ objects exposed to JS
 struct BaseHandle {
 	virtual ~BaseHandle() {}
 	virtual void Close() = 0; // Force all handles to be closeable
+	uint64_t id; // Store its own ID for removal
 };
 
 // Represents a `uv_file` (just an int)
@@ -23,11 +27,11 @@ struct FileHandle : public BaseHandle {
 	void Close() override; // Implemented in primitives_fs.cpp
 };
 
-// Represents a `uv_dir_t` pointer for directory iteration
-struct DirHandle : public BaseHandle {
-	uv_dir_t* dir;
-	std::string path;
-	DirHandle(uv_dir_t* d, const char* p) : dir(d), path(p) {}
+// Represents a `uv_dir_t*` (scandir result)
+struct DirectoryHandle : public BaseHandle {
+	std::vector<uv_dirent_t> entries;
+	size_t index;
+	DirectoryHandle(std::vector<uv_dirent_t> e) : entries(std::move(e)), index(0) {}
 	void Close() override; // Implemented in primitives_fs.cpp
 };
 
@@ -38,7 +42,6 @@ struct NetHandle : public BaseHandle {
 	AsyncContext* pending_read = nullptr;
 
 	NetHandle() { handle.data = this; }
-	~NetHandle(); // Implemented in primitives_tcp.cpp
 	void Close() override; // Implemented in primitives_tcp.cpp
 };
 
@@ -46,48 +49,53 @@ struct NetHandle : public BaseHandle {
 struct UDPHandle : public BaseHandle {
 	uv_udp_t handle;
 	AsyncContext* pending_read = nullptr;
-	
 	UDPHandle() { handle.data = this; }
-	~UDPHandle(); // Implemented in primitives_udp.cpp
 	void Close() override; // Implemented in primitives_udp.cpp
 };
 
-// Represents a pre-parsed `EVP_PKEY*`
-struct KeyHandle : public BaseHandle {
-	EVP_PKEY* pkey;
-	KeyHandle(EVP_PKEY* k) : pkey(k) {}
-	~KeyHandle() { EVP_PKEY_free(pkey); }
-	void Close() override {} // No-op, dtor handles it
-};
-
-// Represents a pre-parsed `X509*`
-struct CertHandle : public BaseHandle {
-	X509* cert;
-	CertHandle(X509* c) : cert(c) {}
-	~CertHandle() { X509_free(cert); }
-	void Close() override {} // No-op, dtor handles it
-};
-
-// Represents an `SSL_CTX*`
+// Represents a TLS Context `SSL_CTX*`
 struct TLSContextHandle : public BaseHandle {
 	SSL_CTX* ctx;
 	v8::Persistent<v8::Function> cert_resolver;
 	v8::Isolate* isolate;
 
-	TLSContextHandle(v8::Isolate* i, SSL_CTX* c, v8::Local<v8::Function> resolver);
-	~TLSContextHandle();
-	void Close() override {} // No-op, dtor handles it
+	TLSContextHandle(v8::Isolate* i, SSL_CTX* c, v8::Local<v8::Function> resolver) : ctx(c), isolate(i) {
+		cert_resolver.Reset(i, resolver);
+		SSL_CTX_set_ex_data(ctx, 0, this);
+	}
+	~TLSContextHandle() {
+		SSL_CTX_free(ctx);
+		cert_resolver.Reset();
+	}
+	void Close() override { /* No-op, managed by ~TLSContextHandle */ }
 };
 
 // Represents an `SSL*`
 struct TLSHandle : public BaseHandle {
 	SSL* ssl;
-	uint64_t net_handle_id; // ID of the underlying TCP handle
+	std::shared_ptr<NetHandle> net_handle; // Underlying TCP handle
 
-	TLSHandle(SSL* s, uint64_t n_id) : ssl(s), net_handle_id(n_id) {}
+	TLSHandle(SSL* s, std::shared_ptr<NetHandle> n) : ssl(s), net_handle(n) {}
 	~TLSHandle() { SSL_free(ssl); }
 	void Close() override; // Implemented in primitives_tls.cpp
 };
+
+// Represents a parsed `EVP_PKEY*`
+struct KeyHandle : public BaseHandle {
+	EVP_PKEY* pkey;
+	KeyHandle(EVP_PKEY* k) : pkey(k) {}
+	~KeyHandle() { EVP_PKEY_free(pkey); }
+	void Close() override { /* No-op, managed by ~KeyHandle */ }
+};
+
+// Represents a parsed `X509*`
+struct CertHandle : public BaseHandle {
+	X509* cert;
+	CertHandle(X509* c) : cert(c) {}
+	~CertHandle() { X509_free(cert); }
+	void Close() override { /* No-op, managed by ~CertHandle */ }
+};
+
 
 // Global store for all active handles
 class HandleStore {
@@ -96,7 +104,7 @@ public:
 	static void Dispose();
 	
 	static uint64_t Add(std::shared_ptr<BaseHandle> handle);
-	static bool Remove(uint64_t id); // Returns true on success
+	static void Remove(uint64_t id);
 	
 	template<typename T>
 	static std::shared_ptr<T> Get(uint64_t id) {

@@ -36,16 +36,13 @@ v8::MaybeLocal<v8::Module> ResolveModuleCallback(
 	std::filesystem::path referrer_path(*referrer_path_str);
 	std::filesystem::path absolute_path;
 	try {
-		// Basic relative path resolution
-		if (specifier_str.length() > 0 && (*specifier_str)[0] == '.') {
+		if (std::string(*specifier_str).rfind("./", 0) == 0) {
 			 absolute_path = std::filesystem::canonical(referrer_path.parent_path() / *specifier_str);
-		} 
-		// Basic absolute path or named module resolution (needs more logic for node_modules)
-		else {
+		} else {
 			 absolute_path = std::filesystem::canonical(*specifier_str);
 		}
 	} catch(const std::filesystem::filesystem_error& e) {
-		std::string err_msg = "Module not found: Cannot resolve '" + std::string(*specifier_str) + "' from '" + *referrer_path_str + "'";
+		std::string err_msg = "Module not found: " + std::string(*specifier_str);
 		isolate->ThrowException(v8::Exception::Error(v8::String::NewFromUtf8(isolate, err_msg.c_str()).ToLocalChecked()));
 		return v8::MaybeLocal<v8::Module>();
 	}
@@ -57,7 +54,7 @@ v8::MaybeLocal<v8::Module> ResolveModuleCallback(
 
 	std::string source_code;
 	if (!ReadFileSync(path_key, &source_code)) {
-		std::string err_msg = "Module not found: Cannot read file '" + path_key + "'";
+		std::string err_msg = "Module not found: " + path_key;
 		isolate->ThrowException(v8::Exception::Error(v8::String::NewFromUtf8(isolate, err_msg.c_str()).ToLocalChecked()));
 		return v8::MaybeLocal<v8::Module>();
 	}
@@ -86,10 +83,10 @@ void LoadAndRunModules(v8::Local<v8::Context> context, const std::string& stdlib
 		try {
 			abs_path = std::filesystem::canonical(path).string();
 		} catch(const std::filesystem::filesystem_error& e) {
-			std::cerr << "Fatal: Cannot find canonical path for " << path << "\n";
+			std::cerr << "Fatal: Failed to find canonical path for " << path << "\n";
 			exit(1);
 		}
-
+		
 		std::string code;
 		if (!ReadFileSync(abs_path, &code)) {
 			std::cerr << "Fatal: Failed to read " << path << "\n";

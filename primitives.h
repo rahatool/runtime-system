@@ -46,12 +46,15 @@ inline void ReportException(v8::Isolate* isolate, v8::TryCatch* try_catch) {
 // --- V8 Helpers ---
 #define SET_METHOD(obj, name, func) obj->Set(context, v8::String::NewFromUtf8(isolate, name).ToLocalChecked(), v8::FunctionTemplate::New(isolate, func)->GetFunction(context).ToLocalChecked()).Check()
 
-// Gets the data pointer from a Uint8Array, respecting its byteOffset
-inline char* GetUint8ArrayBufferData(v8::Local<v8::Uint8Array> arr) {
+inline char* GetUint8ArrayBufferData(v8::Local<v8::Uint8Array> arr, size_t* len) {
+	*len = arr->ByteLength();
 	return (char*)arr->Buffer()->GetContents().Data() + arr->ByteOffset();
 }
-inline size_t GetUint8ArrayByteLength(v8::Local<v8::Uint8Array> arr) {
-	return arr->ByteLength();
+
+inline char* GetUint8ArrayBufferData(v8::Local<v8::Value> val, size_t* len) {
+	v8::Local<v8::Uint8Array> arr = val.As<v8::Uint8Array>();
+	*len = arr->ByteLength();
+	return (char*)arr->Buffer()->GetContents().Data() + arr->ByteOffset();
 }
 
 // --- Async Contexts ---
@@ -87,9 +90,8 @@ struct AsyncContext {
 	}
 };
 
-// Forward declaration needed by TLS
+// Forward declarations for primitives used across files (e.g., in TLS)
 void TCP_Poll(const v8::FunctionCallbackInfo<v8::Value>& args);
-
 
 #endif // PRIMITIVES_H
 

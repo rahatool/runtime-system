@@ -19,24 +19,19 @@ void HandleStore::Dispose() {
 
 uint64_t HandleStore::Add(std::shared_ptr<BaseHandle> handle) {
 	uint64_t id = next_id++;
+	handle->id = id; // Store the ID on the handle itself
 	store[id] = handle;
 	return id;
 }
 
-bool HandleStore::Remove(uint64_t id) {
-	auto it = store.find(id);
-	if (it != store.end()) {
-		// The shared_ptr destructor will call the handle's destructor
-		// which should free the underlying resource (SSL_CTX_free, EVP_PKEY_free, etc.)
-		// For uv handles, Close() must be called first.
-		it->second->Close(); 
-		store.erase(it);
-		return true;
-	}
-	return false;
+void HandleStore::Remove(uint64_t id) {
+	// Erasing the shared_ptr from the map triggers its destructor,
+	// which in turn calls the destructor for the C++ handle object
+	// (e.g., ~KeyHandle, ~TLSHandle), freeing the C resource.
+	store.erase(id);
 }
 
-// --- Primitive for FinalizationRegistry ---
+// JS primitive: primordials.handles.free(id)
 void HANDLES_Free(const v8::FunctionCallbackInfo<v8::Value>& args) {
 	uint64_t id = args[0].As<v8::BigInt>()->Uint64Value();
 	HandleStore::Remove(id);

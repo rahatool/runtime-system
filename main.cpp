@@ -68,7 +68,7 @@ int main(int argc, char* argv[]) {
 		v8::Local<v8::Context> context = v8::Context::New(isolate, NULL, global);
 		v8::Context::Scope context_scope(context);
 
-		Fiber::init(uv_default_loop());
+		Fiber::init(isolate, uv_default_loop()); // Pass isolate to init
 		HandleStore::Init();
 
 		// Create the single __primordials object
@@ -80,7 +80,7 @@ int main(int argc, char* argv[]) {
 		InitializeTLS(isolate, primordials);
 		InitializeEncoding(isolate, primordials);
 		InitializeFibers(isolate, primordials);
-		InitializeHandles(isolate, primordials); // Exposes handles.free
+		InitializeHandles(isolate, primordials);
 
 		context->Global()->Set(context, v8::String::NewFromUtf8(isolate, "__primordials").ToLocalChecked(), primordials).Check();
 		

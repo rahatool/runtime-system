@@ -5,15 +5,25 @@
 
 // --- Handle Implementation ---
 void FileHandle::Close() {
+	// This is synchronous for cleanup on exit.
+	// The async FS_Close primitive will remove from map.
 	uv_fs_t req;
 	uv_fs_close(Fiber::get_loop(), &req, fd, nullptr);
 	uv_fs_req_cleanup(&req);
 }
 
+void DirectoryHandle::Close() {
+	// Free remaining string copies
+	for (auto& entry : entries) {
+		free(entry.name);
+	}
+	entries.clear();
+}
+
 // --- Async Context ---
 struct FSContext : public AsyncContext {
 	uv_fs_t req;
-	uv_buf_t iov; // Used only for C++ internal read buffer if needed
+	// uv_buf_t iov; // No longer needed, we use user's buffer
 	std::string path_str;
 	std::vector<uv_dirent_t> dir_entries;
 	uv_stat_t stat_buf;
@@ -22,7 +32,7 @@ struct FSContext : public AsyncContext {
 	FSContext(Fiber* f, const char* path = nullptr) : AsyncContext(f) {
 		req.data = this;
 		if (path) path_str = path;
-		iov.base = nullptr; // Not typically used directly anymore
+		// iov.base = nullptr;
 	}
 	~FSContext() {
 		user_buffer.Reset();
@@ -47,7 +57,11 @@ void OnFSCallback(uv_fs_t* req) {
 			case UV_FS_SCANDIR: {
 				uv_dirent_t dent;
 				while (uv_fs_scandir_next(req, &dent) != UV_EOF) {
-					context->dir_entries.push_back(dent);
+					// Make a copy of the dirent
+					uv_dirent_t entry;
+					entry.name = strdup(dent.name);
+					entry.type = dent.type;
+					context->dir_entries.push_back(entry);
 				}
 				context->Resume(v8::Undefined(isolate));
 				break;
@@ -58,6 +72,7 @@ void OnFSCallback(uv_fs_t* req) {
 				context->Resume(v8::Undefined(isolate));
 				break;
 			default:
+				// For open, write, close, sync
 				context->Resume(v8::BigInt::New(isolate, req->result));
 				break;
 		}
@@ -183,25 +198,24 @@ void FS_Status(const v8::FunctionCallbackInfo<v8::Value>& args) {
 	args.GetReturnValue().Set(FillStatObject(isolate, &context->stat_buf));
 }
 
+#define FS_ASYNC_HANDLE_ONLY_CALL(name, func) \
+	v8::Isolate* isolate = args.GetIsolate(); \
+	uint64_t id = args[0].As<v8::BigInt>()->Uint64Value(); \
+	auto handle = HandleStore::Get<FileHandle>(id); \
+	if (!handle) { Throw(isolate, "Invalid file handle"); return; } \
+	FSContext* context = new FSContext(Fiber::get_current(), handle->path.c_str()); \
+	int r = func(Fiber::get_loop(), &context->req, handle->fd, OnFSCallback); \
+	if (r < 0) { delete context; ThrowUVException(isolate, r, name, handle->path.c_str()); return; } \
+	Fiber::yield(); \
+	v8::Local<v8::Value> result = Fiber::get_current()->resume_value.Get(isolate); \
+	if(result->IsNativeError()) { isolate->ThrowException(result); return; } \
+	args.GetReturnValue().Set(v8::Undefined(isolate));
+
 void FS_Sync(const v8::FunctionCallbackInfo<v8::Value>& args) {
-	v8::Isolate* isolate = args.GetIsolate();
-	uint64_t id = args[0].As<v8::BigInt>()->Uint64Value();
-	auto handle = HandleStore::Get<FileHandle>(id);
-	if (!handle) { Throw(isolate, "Invalid file handle"); return; }
-	FSContext* context = new FSContext(Fiber::get_current(), handle->path.c_str());
-	int r = uv_fs_fsync(Fiber::get_loop(), &context->req, handle->fd, OnFSCallback);
-	if (r < 0) { delete context; ThrowUVException(isolate, r, "fsync", handle->path.c_str()); return; }
-	Fiber::yield();
+	FS_ASYNC_HANDLE_ONLY_CALL("fsync", uv_fs_fsync);
 }
 void FS_DataSync(const v8::FunctionCallbackInfo<v8::Value>& args) {
-	v8::Isolate* isolate = args.GetIsolate();
-	uint64_t id = args[0].As<v8::BigInt>()->Uint64Value();
-	auto handle = HandleStore::Get<FileHandle>(id);
-	if (!handle) { Throw(isolate, "Invalid file handle"); return; }
-	FSContext* context = new FSContext(Fiber::get_current(), handle->path.c_str());
-	int r = uv_fs_fdatasync(Fiber::get_loop(), &context->req, handle->fd, OnFSCallback);
-	if (r < 0) { delete context; ThrowUVException(isolate, r, "fdatasync", handle->path.c_str()); return; }
-	Fiber::yield();
+	FS_ASYNC_HANDLE_ONLY_CALL("fdatasync", uv_fs_fdatasync);
 }
 
 #define FS_ASYNC_PATH_ONLY_CALL(name, func, ...) \
@@ -238,6 +252,7 @@ void FS_DirOpen(const v8::FunctionCallbackInfo<v8::Value>& args) {
 	v8::Local<v8::Value> result = Fiber::get_current()->resume_value.Get(isolate);
 	if(result->IsNativeError()) { isolate->ThrowException(result); return; }
 
+	// Steal the vector of entries from the context before it's deleted
 	auto handle = std::make_shared<DirectoryHandle>(std::move(context->dir_entries));
 	uint64_t id = HandleStore::Add(handle);
 	args.GetReturnValue().Set(v8::BigInt::New(isolate, id));
@@ -255,16 +270,21 @@ void FS_DirRead(const v8::FunctionCallbackInfo<v8::Value>& args) {
 		return;
 	}
 
-	uv_dirent_t dent = handle->entries[handle->index++];
+	uv_dirent_t& dent = handle->entries[handle->index++];
 	v8::Local<v8::Object> entry = v8::Object::New(isolate);
 	entry->Set(context, v8::String::NewFromUtf8(isolate, "name").ToLocalChecked(), v8::String::NewFromUtf8(isolate, dent.name).ToLocalChecked()).Check();
 	entry->Set(context, v8::String::NewFromUtf8(isolate, "type").ToLocalChecked(), v8::Integer::New(isolate, dent.type)).Check();
+	free(dent.name); // Free the strdup'd name
 	args.GetReturnValue().Set(entry);
 }
 
 void FS_DirClose(const v8::FunctionCallbackInfo<v8::Value>& args) {
 	uint64_t id = args[0].As<v8::BigInt>()->Uint64Value();
-	HandleStore::Remove(id); // FinalizationRegistry will delete C++ object
+	auto handle = HandleStore::Get<DirectoryHandle>(id);
+	if (!handle) { Throw(args.GetIsolate(), "Invalid directory handle"); return; }
+	
+	handle->Close(); // Frees remaining strings
+	HandleStore::Remove(id);
 }
 
 void InitializeFS(v8::Isolate* isolate, v8::Local<v8::Object> exports) {

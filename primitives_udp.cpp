@@ -5,9 +5,11 @@
 
 // --- Handle Implementation ---
 void UDPHandle::Close() {
-	uv_close(&handle, [](uv_handle_t* h){
-		// C++ object deleted via shared_ptr in HandleStore::Remove
-	});
+	if (!uv_is_closing((uv_handle_t*)&handle)) {
+		uv_close((uv_handle_t*)&handle, [](uv_handle_t* h){
+			// C++ object deleted via shared_ptr in HandleStore::Remove
+		});
+	}
 }
 
 // --- Contexts for Async Ops ---
@@ -75,13 +77,13 @@ void OnRecv(uv_udp_t* handle, ssize_t nread, const uv_buf_t* buf, const struct s
 			uv_ip4_name((const sockaddr_in*)addr, host_str, 17);
 			context->host = host_str;
 			context->port = ntohs(((const sockaddr_in*)addr)->sin_port);
-		} else {
+		} else if (addr->sa_family == AF_INET6) {
 			char host_str[40];
 			uv_ip6_name((const sockaddr_in6*)addr, host_str, 40);
 			context->host = host_str;
 			context->port = ntohs(((const sockaddr_in6*)addr)->sin6_port);
 		}
-		// Return bytes read (-1n for EOF/Error covered above)
+		// Return bytes read
 		context->Resume(v8::BigInt::New(context->fiber->isolate(), nread));
 	}
 	// Don't delete context here, JS needs host/port

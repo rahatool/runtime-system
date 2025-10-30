@@ -22,7 +22,7 @@ class Fiber {
 public:
 	enum State { NEW, RUNNING, SUSPENDED, DONE };
 
-	static void init(uv_loop_t* loop);
+	static void init(v8::Isolate* isolate, uv_loop_t* loop); // Now takes isolate
 	static Fiber* get_current();
 	static uv_loop_t* get_loop();
 
@@ -35,11 +35,11 @@ public:
 	v8::Isolate* isolate() const { return isolate_; }
 
 	v8::Persistent<v8::Value> resume_value;
-	v8::Persistent<v8::Object> js_object; // For Fiber.current()
+	v8::Persistent<v8::Object> js_object; // Unique object for this fiber
 
 private:
-	// Private constructor for main fiber
-	Fiber(); 
+	// Private constructor for main fiber, now takes isolate
+	Fiber(v8::Isolate* isolate); 
 	void run();
 
 	// Platform-specific entry points

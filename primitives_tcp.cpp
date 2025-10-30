@@ -5,9 +5,11 @@
 
 // --- Handle Implementation ---
 void NetHandle::Close() {
-	uv_close(&handle, [](uv_handle_t* h){
-		// C++ object deleted via shared_ptr in HandleStore::Remove
-	});
+	if (!uv_is_closing((uv_handle_t*)&handle)) {
+		uv_close((uv_handle_t*)&handle, [](uv_handle_t* h){
+			// C++ object deleted via shared_ptr in HandleStore::Remove
+		});
+	}
 }
 
 // --- Contexts for Async Ops ---
@@ -72,6 +74,8 @@ void OnUvConnection(uv_stream_t* server_handle, int status) {
 			uint64_t id = HandleStore::Add(client_handle);
 			wrap->Resume(v8::BigInt::New(isolate, id));
 		} else {
+			// Failed to accept, close the client handle immediately
+			uv_close((uv_handle_t*)&client_handle->handle, [](uv_handle_t* h){});
 			wrap->ResumeError(-1, "accept");
 		}
 	}
@@ -115,6 +119,7 @@ void OnPoll(uv_poll_t* handle, int status, int events) {
 	PollContext* context = static_cast<PollContext*>(handle->data);
 	uv_poll_stop(handle);
 	uv_close((uv_handle_t*)handle, [](uv_handle_t* h){
+		// Context is tied to poll_handle, delete it here
 		delete static_cast<PollContext*>(h->data);
 	});
 
