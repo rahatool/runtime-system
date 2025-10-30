@@ -12,34 +12,92 @@ This is the definitive, professional-grade version of the cross-platform JavaScr
 
 4.  **Robust Handle Management:** A central C++ `HandleStore` manages the lifecycle of all I/O objects (files, TCP sockets, TLS sockets, TLS contexts, keys, certs). A JavaScript `FinalizationRegistry` automatically cleans up C++ resources when JS objects are garbage collected.
 
+---
 
+## Dependencies
 
-### Dependencies
+You need development libraries for **V8**, **libuv**, and **OpenSSL**, plus standard build tools.
 
-You will need the development libraries for **libuv** and **OpenSSL**.
+### MSYS2 MINGW64 (Windows)
 
-**On Debian/Ubuntu:** `sudo apt-get install libuv1-dev libssl-dev`
+- Open MSYS2 MINGW64 shell.
+- Install toolchain and dependencies:
+  ```sh
+  pacman -S \
+    mingw-w64-x86_64-toolchain \
+    mingw-w64-x86_64-cmake \
+    mingw-w64-x86_64-ninja \
+    mingw-w64-x86_64-pkg-config \
+    mingw-w64-x86_64-v8 \
+    mingw-w64-x86_64-libuv \
+    mingw-w64-x86_64-openssl
+  ```
+- V8 headers and libs are under `/mingw64`. The build uses `V8_DIR` to locate them.
 
-**On Alpine:** `apk add libuv-dev openssl-dev`
-
-**On MSYS2 (for Windows):** `pacman -S mingw-w64-x86_64-libuv mingw-w64-x86_64-openssl`
-
-### How to Build & Run
+### Debian/Ubuntu
 
 ```sh
-# Create a build directory
-mkdir build && cd build
+sudo apt-get update
+sudo apt-get install -y \
+  build-essential cmake ninja-build pkg-config \
+  libuv1-dev libssl-dev
+# V8: install from your distro or custom build; set V8_DIR accordingly
+```
 
-# Configure with CMake
+### Alpine
+
+```sh
+apk add --no-cache \
+  build-base cmake ninja pkgconfig \
+  libuv-dev openssl-dev
+# V8: install from community repo or custom build; set V8_DIR accordingly
+```
+
+---
+
+## Environment
+
+- The CMake project uses `V8_DIR` to locate V8 headers and libraries.
+- By default, `CMakeLists.txt` sets:
+  ```
+  set(V8_DIR "/mingw64")
+  ```
+- You can override in your shell:
+  ```sh
+  export V8_DIR=/mingw64
+  ```
+
+---
+
+## Build & Run
+
+From the project root:
+
+```sh
+rm -rf build && mkdir build && cd build
 cmake ..
+ninja   # or: cmake --build .   or: mingw32-make
+```
 
-# Build the runtime
-make
+### TLS Demo Certificates (optional)
 
-# Create self-signed certificates for the SNI demo
+```sh
 openssl req -x509 -newkey rsa:2048 -nodes -keyout a.key -out a.crt -days 365 -subj "/CN=a.example.com"
 openssl req -x509 -newkey rsa:2048 -nodes -keyout b.key -out b.crt -days 365 -subj "/CN=b.example.com"
-
-# Run the application
-./runtime ../main.mjs
 ```
+
+### Run
+
+From the `build` directory:
+```sh
+./runtime ../main.js
+```
+
+
+
+## Notes
+
+- Build system: C++17, CMake, Ninja/MinGW.
+- Links against: `v8`, `v8_libbase`, `v8_libplatform`, `libuv`, `OpenSSL::SSL`, `OpenSSL::Crypto` (plus Windows system libs).
+
+

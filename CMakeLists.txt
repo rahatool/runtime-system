@@ -12,7 +12,10 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # --- Find Dependencies ---
-find_package(UV REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(UV REQUIRED libuv)
+include_directories(${UV_INCLUDE_DIRS})
+link_directories(${UV_LIBRARY_DIRS})
 find_package(OpenSSL REQUIRED)
 
 # --- Include Directories ---
@@ -38,7 +41,7 @@ target_link_libraries(runtime
 	# V8
 	v8 v8_libbase v8_libplatform
 	# Dependencies
-	${UV_LIBRARY}
+	${UV_LIBRARIES}
 	OpenSSL::SSL
 	OpenSSL::Crypto
 )
