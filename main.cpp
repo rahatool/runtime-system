@@ -85,7 +85,7 @@ int main(int argc, char* argv[]) {
 		context->Global()->Set(context, v8::String::NewFromUtf8(isolate, "__primordials").ToLocalChecked(), primordials).Check();
 		
 		v8::TryCatch try_catch(isolate);
-		LoadAndRunModules(context, "stdlib.js", argv[1], &try_catch);
+		LoadAndRunModules(context, argv[1], &try_catch);
 		
 		uv_run(Fiber::get_loop(), UV_RUN_DEFAULT);
 		

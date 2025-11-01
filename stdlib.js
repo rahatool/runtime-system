@@ -1,22 +1,35 @@
+let check = (assertion, message) => {
+	if (!assertion) {
+		throw new Error(message);
+	}
+};
+
 const primordials = globalThis.__primordials;
-if (!primordials) throw new Error("Fatal: primordials not found.");
+check(primordials, "Fatal: primordials not found.");
 
 // --- Fiber Control ---
 export const Fiber = {
-	run: primordials.fiber.run, // No longer returns a Promise
+	run: primordials.fiber.run,
 	current: primordials.fiber.current,
 	sleep: (ms) => primordials.fiber.sleep(BigInt(ms)),
 };
 
 // --- Encoding ---
-const _TextEncoder = class { encode(str) { return primordials.encoding.encode(str); } };
-const _TextDecoder = class { decode(buffer) { return primordials.encoding.decode(buffer); } };
-export { _TextEncoder as TextEncoder };
-export { _TextDecoder as TextDecoder };
-const textEncoder = new _TextEncoder();
-
-String.prototype.bytes = function() {
-	return textEncoder.encode(this.toString());
+export class TextEncoder {
+	encode(str) {
+		return primordials.encoding.encode(str);
+	}
+};
+export class TextDecoder {
+	decode(buffer) {
+		return primordials.encoding.decode(buffer);
+	}
+};
+String.prototype.toBytes = function() {
+	return primordials.encoding.encode(this);
+};
+Uint8Array.prototype.toString = function() {
+	return primordials.encoding.decode(this);
 };
 
 // --- Handle Cleanup ---
@@ -27,19 +40,16 @@ const handleRegistry = new FinalizationRegistry((id) => {
 // --- Base class for external resources ---
 class ExternalResource {
 	constructor(id) {
-		if (typeof id !== 'bigint' || id <= 0n) {
-			 throw new Error("Handle ID must be a positive BigInt");
-		}
+		check(typeof id === 'bigint', "Handle ID must be a positive BigInt");
 		this.id = id;
 		handleRegistry.register(this, id);
 	}
 	_unregister() {
 		handleRegistry.unregister(this);
 	}
-	// Base close unregisters.
-	close() { this._unregister(); }
-
-	// Implement explicit resource management symbol
+	close() {
+		this._unregister();
+	}
 	[Symbol.dispose]() {
 		this.close();
 	}
@@ -55,10 +65,8 @@ class StreamHandle extends ExternalResource {
 	readAll() {
 		const chunks = [];
 		let totalBytes = 0;
-		// Use for...of on the iterator
 		for (const chunk of this) {
 			// chunk is a subarray view, which will be overwritten.
-			// We must make a copy using slice().
 			chunks.push(chunk.slice());
 			totalBytes += chunk.length;
 		}
@@ -85,37 +93,29 @@ class StreamHandle extends ExternalResource {
 		while (totalWritten < totalLength) {
 			// Use subarray for the remaining part (this is a view, which is efficient)
 			const bytesWritten = this.write(buffer.subarray(Number(totalWritten)));
-			if (bytesWritten === -1n) { // Check for errors/closure
-				throw new Error("Write failed, stream closed prematurely or error occurred");
-			}
+			check(bytesWritten !== -1n, "Write failed, stream closed prematurely or error occurred");
 			totalWritten += bytesWritten;
 		}
 		return totalWritten;
 	}
 
 	*[Symbol.iterator](chunkSize = 65536) {
-		 const buffer = new Uint8Array(chunkSize);
-		 try {
-			 while(true) {
-				 // Read using current file pointer or stream
-				 const bytesRead = this.read(buffer);
-				 if (bytesRead === -1n) break; // EOF is -1n
-				 if (bytesRead > 0n) {
-					// yield a *view* (subarray) of the bytes read
-					yield buffer.subarray(0, Number(bytesRead));
-				 }
-			 }
-		 } catch (e) {
-			 console.log(`Stream read error: ${e.message}`);
-		 }
+		const buffer = new Uint8Array(chunkSize);
+		while (true) {
+			// Read using current file pointer or stream
+			const bytesRead = this.read(buffer);
+			if (bytesRead === -1n) break; // EOF is -1n
+			if (bytesRead > 0n) {
+				// yield a *view* (subarray) of the bytes read
+				yield buffer.subarray(0, Number(bytesRead));
+			}
+		}
 	}
 }
 
 // --- Filesystem ---
 export class FileHandle extends StreamHandle {
-	// Deno-style options object
-	static open(path, options = {}) { // Default options to {}
-		// Default read to true
+	static open(path, options = {}) {
 		const { read = true, write = false, append = false, create = false, truncate = false, mode = 0o666 } = options;
 
 		let flags = 0;
@@ -147,9 +147,15 @@ export class FileHandle extends StreamHandle {
 		return primordials.fs.write(this.id, buffer, offset);
 	}
 
-	status() { return primordials.fs.status(this.id); }
-	sync() { return primordials.fs.sync(this.id); }
-	dataSync() { return primordials.fs.dataSync(this.id); }
+	status() {
+		return primordials.fs.status(this.id);
+	}
+	sync() {
+		return primordials.fs.sync(this.id);
+	}
+	dataSync() {
+		return primordials.fs.dataSync(this.id);
+	}
 
 	// Overrides base close to call primitive
 	close() {
@@ -177,7 +183,10 @@ export class DirectoryHandle extends ExternalResource {
 		return primordials.fs.dirRead(this.id);
 	}
 
-	close() { this._unregister(); return primordials.fs.dirClose(this.id); }
+	close() {
+		this._unregister();
+		return primordials.fs.dirClose(this.id);
+	}
 
 	*[Symbol.iterator]() {
 		while (true) {
@@ -189,15 +198,61 @@ export class DirectoryHandle extends ExternalResource {
 }
 
 // --- DNS ---
+
+function httpsGet(host, path) {
+	using socket = TLSSocket.connect(host, 443);
+	const request =
+		`GET ${path} HTTP/1.1\r\n` +
+		`Host: ${host}\r\n` +
+		`User-Agent: v8-runtime/1\r\n` +
+		`Accept: application/dns-json\r\n` +
+		`Connection: close\r\n` +
+		`\r\n`;
+	socket.writeAll(request.toBytes());
+	const response = socket.readAll().toString();
+	const sep = response.indexOf("\r\n\r\n");
+	check(sep !== -1, "Invalid HTTP response");
+	const body = response.slice(sep + 4);
+	return JSON.parse(body);
+}
+
+const RRNUM = { A: 1, AAAA: 28, MX: 15, TXT: 16, CNAME: 5, NS: 2 };
+
 export const dns = {
-	resolve: (hostname, rrtype = 'A') => {
-		return primordials.dns.resolve(hostname, rrtype);
-	},
+    resolve: (hostname, rrtype = 'A') => {
+        const upper = String(rrtype).toUpperCase();
+        if (upper === 'A' || upper === 'AAAA') {
+            return primordials.dns.resolve(hostname, upper);
+        }
+        const type = RRNUM[upper];
+        check(type, 'DNS record type not supported');
+        const q = encodeURIComponent(hostname);
+        const response = httpsGet('dns.google', `/resolve?name=${q}&type=${type}`);
+        check(response.Status === 0 && response.Answer instanceof Array);
+        // Map common record types to simple objects
+        return response.Answer.map(a => {
+            // a: { name, type, TTL, data }
+            switch (upper) {
+                case 'CNAME':
+                case 'NS':
+                    return { value: a.data.replace(/\.$/, ''), ttl: a.TTL };
+                case 'TXT': {
+                    const m = a.data.match(/^"(.*)"$/);
+                    return { value: m ? m[1] : a.data, ttl: a.TTL };
+                }
+                case 'MX': {
+                    const m = a.data.match(/^(\d+)\s+(.*)$/);
+                    return m ? { priority: Number(m[1]), exchange: m[2].replace(/\.$/, ''), ttl: a.TTL } : { value: a.data, ttl: a.TTL };
+                }
+                default:
+                    return { value: a.data, ttl: a.TTL };
+            }
+        });
+    },
 };
 
 // --- Networking (TCP) ---
 export class TCPSocket extends StreamHandle {
-	// Factory method
 	static connect(host, port) {
 		const id = primordials.tcp.connect(host, port);
 		return new TCPSocket(id);
@@ -214,42 +269,41 @@ export class TCPSocket extends StreamHandle {
 		return bytesWritten;
 	}
 
-	close() { this._unregister(); primordials.tcp.close(this.id); }
+	close() {
+		this._unregister();
+		primordials.tcp.close(this.id);
+	}
 }
 
 export class TCPServer extends ExternalResource {
-	// Factory method
 	static listen(port, host = '0.0.0.0') {
 		const id = primordials.tcp.listen(host, port);
-		console.log(`TCP Server listening on ${host}:${port}`);
 		return new TCPServer(id);
 	}
 
 	*[Symbol.iterator]() {
-		try {
-			while(true) {
-				const clientId = primordials.tcp.accept(this.id);
-				if (clientId < 0n) {
-					 console.log(`TCP Accept error: ${clientId}`);
-					 break;
-				}
-				yield new TCPSocket(clientId);
+		while (true) {
+			const clientId = primordials.tcp.accept(this.id);
+			if (clientId < 0n) {
+				console.log(`TCP Accept error: ${clientId}`);
+				break;
 			}
-		} catch (e) {
-			console.log(`TCP Server error: ${e.message}`);
+			yield new TCPSocket(clientId);
 		}
 	}
 
-	close() { this._unregister(); primordials.tcp.close(this.id); }
+	close() {
+		this._unregister();
+		primordials.tcp.close(this.id);
+	}
 }
 
 // --- Dgram (UDP) ---
 export class UDPSocket extends ExternalResource {
 	static listen(port, host = '0.0.0.0') {
-		 const id = primordials.udp.create();
-		 primordials.udp.listen(id, host, port);
-		 console.log(`UDP Socket listening on ${host}:${port}`);
-		 return new UDPSocket(id);
+		const id = primordials.udp.create();
+		primordials.udp.listen(id, host, port);
+		return new UDPSocket(id);
 	}
 
 	write(buffer, port, host) {
@@ -261,26 +315,25 @@ export class UDPSocket extends ExternalResource {
 		return primordials.udp.read(this.id, buffer);
 	}
 
-	close() { this._unregister(); primordials.udp.close(this.id); }
+	close() {
+		this._unregister();
+		primordials.udp.close(this.id);
+	}
 
-	 *[Symbol.iterator](bufferSize = 65536) {
-		 const buffer = new Uint8Array(bufferSize);
-		 try {
-			 while(true) {
-				 const result = this.read(buffer);
-				 if (result === null) break; // Socket closed
-				 if (result.bytes > 0n) {
-					 // Return object includes host and port directly
-					 yield {
-						 data: buffer.subarray(0, Number(result.bytes)),
-						 host: result.host,
-						 port: result.port
-					 };
-				 }
-			 }
-		 } catch(e) {
-			  console.log(`UDP read error: ${e.message}`);
-		 }
+	*[Symbol.iterator](bufferSize = 65536) {
+		const buffer = new Uint8Array(bufferSize);
+		while (true) {
+			const result = this.read(buffer);
+			if (result === null) break; // Socket closed
+			if (result.bytes > 0n) {
+				// Return object includes host and port directly
+				yield {
+					data: buffer.subarray(0, Number(result.bytes)),
+					host: result.host,
+					port: result.port
+				};
+			}
+		}
 	}
 }
 
@@ -291,14 +344,13 @@ export class KeyHandle extends ExternalResource {
 	}
 }
 export class CertHandle extends ExternalResource {
-	 constructor(pem) { // Expects Uint8Array
+	constructor(pem) { // Expects Uint8Array
 		super(primordials.tls.parseCert(pem));
 	}
 }
 
 export class TLSSocket extends StreamHandle {
-	 // Factory method
-	 static connect(host, port, options = {}) {
+	static connect(host, port, options = {}) {
 		const tcpSocket = TCPSocket.connect(host, port);
 		try {
 			// We pass the tcpSocket *ID* to the connect primitive
@@ -306,9 +358,9 @@ export class TLSSocket extends StreamHandle {
 			const tlsSocket = new TLSSocket(id);
 			tlsSocket._tcpSocket = tcpSocket; // Store the JS object for closing
 			return tlsSocket;
-		} catch (e) {
+		} catch (fault) {
 			tcpSocket.close();
-			throw e;
+			throw fault;
 		}
 	}
 
@@ -327,83 +379,72 @@ export class TLSSocket extends StreamHandle {
 		this._unregister();
 		try {
 			primordials.tls.close(this.id); // Closes SSL* layer
-		} catch(e) {
-			 console.log(`TLS close error: ${e.message}`);
+		} catch(fault) {
+			 console.log(`TLS close error: ${fault.message}`);
 		}
 		// Also close the underlying TCP socket
 		if (this._tcpSocket) {
-			 try { this._tcpSocket.close(); }
-			 catch(e) { /* Ignore errors closing underlying socket */ }
+			try {
+				this._tcpSocket.close();
+			} catch(fault) {
+				/* Ignore errors closing underlying socket */
+			}
 		}
 	}
 }
 
 // TLSServer manages the TLSContextHandle
 export class TLSServer extends ExternalResource {
-	 // Factory method - Takes resolver, port, host
-	 static listen(certificateResolver, port, host = '0.0.0.0') {
-		 if (typeof certificateResolver !== 'function') {
-			 throw new Error("TLSServer.listen requires a certificateResolver function");
-		 }
+	static listen(certificateResolver, port, host = '0.0.0.0') {
+		check(typeof certificateResolver == 'function', "TLSServer.listen requires a certificateResolver function");
 
-		 const internalResolver = (servername) => {
-			 const result = certificateResolver(servername);
-			 if (!result || !(result.key instanceof KeyHandle) || !(result.cert instanceof CertHandle)) {
-				  throw new Error("certificateResolver must return { key: KeyHandle, cert: CertHandle }");
-			 }
-			 // Pass the BigInt IDs to C++
-			 return { key: result.key.id, cert: result.cert.id };
-		 };
+		const internalResolver = (serverName) => {
+			const result = certificateResolver(serverName);
+			check(result && result.key instanceof KeyHandle && result.cert instanceof CertHandle, "certificateResolver must return { key: KeyHandle, cert: CertHandle }");
+			// Pass the BigInt IDs to C++
+			return { key: result.key.id, cert: result.cert.id };
+		};
 
-		 // 1. Create the C++ TLS Context (returns a handle ID)
-		 const tls_context_id = primordials.tls.createContext(internalResolver);
-		 let tcpServer;
-		 try {
-			 // 2. Create the underlying TCP Server
-			 tcpServer = TCPServer.listen(port, host); // Use the existing factory
-		 } catch(e) {
-			 // If TCP listen fails, free the TLS context we just made
-			 primordials.handles.free(tls_context_id);
-			 throw e;
-		 }
+		const tlsContextId = primordials.tls.createContext(internalResolver);
+		let tcpServer;
+		try {
+			tcpServer = TCPServer.listen(port, host);
+		} catch(fault) {
+			primordials.handles.free(tlsContextId);
+			throw fault;
+		}
+		return new TLSServer(tlsContextId, tcpServer);
+	}
 
-		 console.log(`TLS Server listening on ${host}:${port}`);
-		 return new TLSServer(tls_context_id, tcpServer);
-	 }
+	constructor(tlsContextId, tcpServer) {
+		super(tlsContextId);
+		this._tcpServer = tcpServer;
+	}
 
-	 constructor(tls_context_id, tcpServer) {
-		super(tls_context_id); // This ID is the TLSContextHandle
-		this._tcpServer = tcpServer; // Store the TCPServer instance
-	 }
+	*[Symbol.iterator]() {
+		// Iterate over incoming TCP connections from the underlying TCPServer
+		for (const tcpSocket of this._tcpServer) {
+			try {
+				// this.id is the tls_context_id, tcpSocket.id is the net_handle_id
+				const tlsSocketId = primordials.tls.accept(this.id, tcpSocket.id);
+				const tlsSocket = new TLSSocket(tlsSocketId);
+				tlsSocket._tcpSocket = tcpSocket; // Store JS object for closing
+				yield tlsSocket;
+			} catch (fault) {
+				console.log(`TLS Handshake Error: ${fault.message}`);
+				tcpSocket.close(); // Close the underlying TCP socket on handshake failure
+			}
+		}
+	}
 
-	 *[Symbol.iterator]() {
-		 try {
-			 // Iterate over incoming TCP connections from the underlying TCPServer
-			 for (const tcpSocket of this._tcpServer) {
-				  try {
-					  // this.id is the tls_context_id, tcpSocket.id is the net_handle_id
-					  const tlsSocketId = primordials.tls.accept(this.id, tcpSocket.id);
-					  const tlsSocket = new TLSSocket(tlsSocketId);
-					  tlsSocket._tcpSocket = tcpSocket; // Store JS object for closing
-					  yield tlsSocket;
-				  } catch (e) {
-					  console.log(`TLS Handshake Error: ${e.message}`);
-					  tcpSocket.close(); // Close the underlying TCP socket on handshake failure
-				  }
-			 }
-		 } catch (e) {
-			  console.log(`TLS Server error: ${e.message}`);
-		 }
-	 }
+	close() {
+		this._unregister();
+		primordials.handles.free(this.id);
 
-	 close() {
-		 this._unregister(); // Unregisters the TLSContextHandle
-		 // FinalizationRegistry will call primordials.handles.free(this.id)
-
-		 if (this._tcpServer) {
-			 this._tcpServer.close();
-		 }
-	 }
+		if (this._tcpServer) {
+			this._tcpServer.close();
+		}
+	}
 }
 
 // --- Console ---
@@ -413,4 +454,3 @@ globalThis.console = {
 		print(msg);
 	}
 };
-

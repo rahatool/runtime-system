@@ -8,7 +8,7 @@ if(NOT V8_DIR)
 	message(FATAL_ERROR "Please set the V8_DIR environment variable.")
 endif()
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # --- Find Dependencies ---
@@ -49,6 +49,8 @@ target_link_libraries(runtime
 # Platform-specific setup
 if(WIN32)
 	add_definitions(-D_WIN32_WINNT=0x0601)
+    # Match MSYS2 V8 build (pointer compression + 31-bit smis on 64-bit + sandbox)
+    add_definitions(-DV8_COMPRESS_POINTERS -DV8_31BIT_SMIS_ON_64BIT_ARCH -DV8_ENABLE_SANDBOX)
 	target_link_libraries(runtime ws2_32 psapi userenv dbghelp)
 else()
 	add_definitions(-D_XOPEN_SOURCE)

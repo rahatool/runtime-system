@@ -65,18 +65,21 @@ void OnUvConnection(uv_stream_t* server_handle, int status) {
 	v8::Isolate* isolate = fiber->isolate();
 	v8::HandleScope handle_scope(isolate);
 
-	if (status < 0) {
-		wrap->ResumeError(status, "accept");
-	} else {
+    if (status < 0) {
+        AsyncContext ctx(fiber);
+        ctx.ResumeError(status, "accept");
+    } else {
 		auto client_handle = std::make_shared<NetHandle>();
 		uv_tcp_init(Fiber::get_loop(), &client_handle->handle);
 		if (uv_accept(server_handle, (uv_stream_t*)&client_handle->handle) == 0) {
-			uint64_t id = HandleStore::Add(client_handle);
-			wrap->Resume(v8::BigInt::New(isolate, id));
+            uint64_t id = HandleStore::Add(client_handle);
+            AsyncContext ctx(fiber);
+            ctx.Resume(v8::BigInt::New(isolate, id));
 		} else {
 			// Failed to accept, close the client handle immediately
 			uv_close((uv_handle_t*)&client_handle->handle, [](uv_handle_t* h){});
-			wrap->ResumeError(-1, "accept");
+            AsyncContext ctx(fiber);
+            ctx.ResumeError(-1, "accept");
 		}
 	}
 }
@@ -229,11 +232,11 @@ void TCP_Poll(const v8::FunctionCallbackInfo<v8::Value>& args) {
 	auto wrap = HandleStore::Get<NetHandle>(id);
 	if (!wrap) { Throw(isolate, "Invalid socket handle"); return; }
 
-	uv_os_fd_t fd;
-	if (uv_fileno(&wrap->handle, &fd) != 0) { ThrowUVException(isolate, -1, "poll (fileno)"); return; }
+    uv_os_fd_t fd;
+    if (uv_fileno((const uv_handle_t*)&wrap->handle, &fd) != 0) { ThrowUVException(isolate, -1, "poll (fileno)"); return; }
 
 	PollContext* context = new PollContext(Fiber::get_current());
-	uv_poll_init_socket(Fiber::get_loop(), &context->poll_handle, fd);
+    uv_poll_init_socket(Fiber::get_loop(), &context->poll_handle, (uv_os_sock_t) (uintptr_t) fd);
 	uv_poll_start(&context->poll_handle, events, OnPoll);
 
 	Fiber::yield();

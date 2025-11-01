@@ -47,14 +47,16 @@ inline void ReportException(v8::Isolate* isolate, v8::TryCatch* try_catch) {
 #define SET_METHOD(obj, name, func) obj->Set(context, v8::String::NewFromUtf8(isolate, name).ToLocalChecked(), v8::FunctionTemplate::New(isolate, func)->GetFunction(context).ToLocalChecked()).Check()
 
 inline char* GetUint8ArrayBufferData(v8::Local<v8::Uint8Array> arr, size_t* len) {
-	*len = arr->ByteLength();
-	return (char*)arr->Buffer()->GetContents().Data() + arr->ByteOffset();
+    *len = arr->ByteLength();
+    std::shared_ptr<v8::BackingStore> backing = arr->Buffer()->GetBackingStore();
+    return static_cast<char*>(backing->Data()) + arr->ByteOffset();
 }
 
 inline char* GetUint8ArrayBufferData(v8::Local<v8::Value> val, size_t* len) {
-	v8::Local<v8::Uint8Array> arr = val.As<v8::Uint8Array>();
-	*len = arr->ByteLength();
-	return (char*)arr->Buffer()->GetContents().Data() + arr->ByteOffset();
+    v8::Local<v8::Uint8Array> arr = val.As<v8::Uint8Array>();
+    *len = arr->ByteLength();
+    std::shared_ptr<v8::BackingStore> backing = arr->Buffer()->GetBackingStore();
+    return static_cast<char*>(backing->Data()) + arr->ByteOffset();
 }
 
 // --- Async Contexts ---

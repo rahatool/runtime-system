@@ -11,9 +11,6 @@ void TLSHandle::Close() {
 	// The underlying NetHandle will be closed by its JS wrapper
 }
 
-void TLSContextHandle::Close() {
-	// No-op, managed by ~TLSContextHandle destructor
-}
 
 // --- Internal Helper ---
 // This is the core of the async TLS logic.
@@ -152,9 +149,9 @@ void TLS_Accept(const v8::FunctionCallbackInfo<v8::Value>& args) {
 	if (!tls_ctx || !net_handle) { Throw(isolate, "Invalid context or socket handle"); return; }
 
 	SSL* ssl = SSL_new(tls_ctx->ctx);
-	uv_os_fd_t fd;
-	uv_fileno(&net_handle->handle, &fd);
-	SSL_set_fd(ssl, fd);
+    uv_os_fd_t fd;
+    uv_fileno((const uv_handle_t*)&net_handle->handle, &fd);
+    SSL_set_fd(ssl, (int)(uintptr_t)fd);
 	
 	auto sock = std::make_shared<TLSHandle>(ssl, net_handle);
 
@@ -184,9 +181,9 @@ void TLS_Connect(const v8::FunctionCallbackInfo<v8::Value>& args) {
 	SSL* ssl = SSL_new(ctx);
 	SSL_set_tlsext_host_name(ssl, *host); // Set SNI for client
 
-	uv_os_fd_t fd;
-	uv_fileno(&net_handle->handle, &fd);
-	SSL_set_fd(ssl, fd);
+    uv_os_fd_t fd;
+    uv_fileno((const uv_handle_t*)&net_handle->handle, &fd);
+    SSL_set_fd(ssl, (int)(uintptr_t)fd);
 	
 	auto sock = std::make_shared<TLSHandle>(ssl, net_handle);
 	

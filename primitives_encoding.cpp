@@ -6,8 +6,9 @@ void Encoding_Encode(const v8::FunctionCallbackInfo<v8::Value>& args) {
 	v8::String::Utf8Value str(isolate, args[0]);
 	size_t len = str.length();
 	
-	v8::Local<v8::ArrayBuffer> ab = v8::ArrayBuffer::New(isolate, len);
-	memcpy(ab->GetContents().Data(), *str, len);
+    v8::Local<v8::ArrayBuffer> ab = v8::ArrayBuffer::New(isolate, len);
+    std::shared_ptr<v8::BackingStore> backing = ab->GetBackingStore();
+    memcpy(backing->Data(), *str, len);
 	
 	args.GetReturnValue().Set(v8::Uint8Array::New(ab, 0, len));
 }

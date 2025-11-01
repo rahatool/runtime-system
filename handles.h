@@ -10,7 +10,10 @@
 #include <openssl/evp.h>
 #include "v8.h"
 #include "uv.h"
-#include "fiber.h" // For AsyncContext
+#include "fiber.h" // For Fiber
+
+// Forward declaration to avoid include cycle
+struct AsyncContext;
 
 // Base class for all C++ objects exposed to JS
 struct BaseHandle {

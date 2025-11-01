@@ -82,8 +82,8 @@ ninja   # or: cmake --build .   or: mingw32-make
 ### TLS Demo Certificates (optional)
 
 ```sh
-openssl req -x509 -newkey rsa:2048 -nodes -keyout a.key -out a.crt -days 365 -subj "/CN=a.example.com"
-openssl req -x509 -newkey rsa:2048 -nodes -keyout b.key -out b.crt -days 365 -subj "/CN=b.example.com"
+MSYS_NO_PATHCONV=1 openssl req -x509 -newkey rsa:2048 -nodes -keyout a.key -out a.crt -days 365 -subj "/CN=a.example.com"
+MSYS_NO_PATHCONV=1 openssl req -x509 -newkey rsa:2048 -nodes -keyout b.key -out b.crt -days 365 -subj "/CN=b.example.com"
 ```
 
 ### Run
@@ -93,11 +93,7 @@ From the `build` directory:
 ./runtime ../main.js
 ```
 
-
-
 ## Notes
 
-- Build system: C++17, CMake, Ninja/MinGW.
+- Build system: C++20, CMake, Ninja/MinGW.
 - Links against: `v8`, `v8_libbase`, `v8_libplatform`, `libuv`, `OpenSSL::SSL`, `OpenSSL::Crypto` (plus Windows system libs).
-
-

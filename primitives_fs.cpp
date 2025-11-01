@@ -14,9 +14,9 @@ void FileHandle::Close() {
 
 void DirectoryHandle::Close() {
 	// Free remaining string copies
-	for (auto& entry : entries) {
-		free(entry.name);
-	}
+    for (auto& entry : entries) {
+        free((void*)entry.name);
+    }
 	entries.clear();
 }
 
@@ -46,8 +46,8 @@ void OnFSCallback(uv_fs_t* req) {
 	v8::Isolate* isolate = context->fiber->isolate();
 	v8::HandleScope handle_scope(isolate);
 
-	if (req->result < 0) {
-		context->ResumeError(req->result, uv_fs_type_name(req->fs_type), context->path_str.c_str());
+    if (req->result < 0) {
+        context->ResumeError(req->result, "fs", context->path_str.c_str());
 	} else {
 		switch (req->fs_type) {
 			case UV_FS_READ:
@@ -274,7 +274,7 @@ void FS_DirRead(const v8::FunctionCallbackInfo<v8::Value>& args) {
 	v8::Local<v8::Object> entry = v8::Object::New(isolate);
 	entry->Set(context, v8::String::NewFromUtf8(isolate, "name").ToLocalChecked(), v8::String::NewFromUtf8(isolate, dent.name).ToLocalChecked()).Check();
 	entry->Set(context, v8::String::NewFromUtf8(isolate, "type").ToLocalChecked(), v8::Integer::New(isolate, dent.type)).Check();
-	free(dent.name); // Free the strdup'd name
+    free((void*)dent.name); // Free the strdup'd name
 	args.GetReturnValue().Set(entry);
 }
 

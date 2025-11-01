@@ -31,7 +31,12 @@ v8::MaybeLocal<v8::Module> ResolveModuleCallback(
 	v8::TryCatch try_catch(isolate);
 	RuntimeState* state = static_cast<RuntimeState*>(isolate->GetData(0));
 	v8::String::Utf8Value specifier_str(isolate, specifier);
-	v8::String::Utf8Value referrer_path_str(isolate, referrer->GetScriptOrigin().ResourceName());
+    // Find referrer path by reverse lookup in cache
+    std::string ref_path;
+    for (auto& it : state->module_cache) {
+        if (it.second.Get(isolate) == referrer) { ref_path = it.first; break; }
+    }
+    v8::String::Utf8Value referrer_path_str(isolate, v8::String::NewFromUtf8(isolate, ref_path.c_str()).ToLocalChecked());
 	
 	std::filesystem::path referrer_path(*referrer_path_str);
 	std::filesystem::path absolute_path;
@@ -59,8 +64,9 @@ v8::MaybeLocal<v8::Module> ResolveModuleCallback(
 		return v8::MaybeLocal<v8::Module>();
 	}
 
-	v8::Local<v8::String> source_v8 = v8::String::NewFromUtf8(isolate, source_code.c_str(), v8::NewStringType::kNormal, source_code.length()).ToLocalChecked();
-	v8::ScriptOrigin origin(isolate, v8::String::NewFromUtf8(isolate, path_key.c_str()).ToLocalChecked(), 0, 0, false, -1, v8::Local<v8::Value>(), false, false, true);
+    v8::Local<v8::String> source_v8 = v8::String::NewFromUtf8(isolate, source_code.c_str(), v8::NewStringType::kNormal, source_code.length()).ToLocalChecked();
+    v8::Local<v8::String> res_name = v8::String::NewFromUtf8(isolate, path_key.c_str()).ToLocalChecked();
+    v8::ScriptOrigin origin(res_name, 0, 0, false, -1, v8::Local<v8::Value>(), false, false, true, v8::Local<v8::Data>());
 	v8::ScriptCompiler::Source source(source_v8, origin);
 	
 	v8::MaybeLocal<v8::Module> module = v8::ScriptCompiler::CompileModule(isolate, &source);
@@ -74,7 +80,7 @@ v8::MaybeLocal<v8::Module> ResolveModuleCallback(
 	return local_module;
 }
 
-void LoadAndRunModules(v8::Local<v8::Context> context, const std::string& stdlib_path_str, const char* entry_path_str, v8::TryCatch* try_catch) {
+void LoadAndRunModules(v8::Local<v8::Context> context, const char* entry_path_str, v8::TryCatch* try_catch) {
 	v8::Isolate* isolate = context->GetIsolate();
 	RuntimeState* state = static_cast<RuntimeState*>(isolate->GetData(0));
 
@@ -92,7 +98,8 @@ void LoadAndRunModules(v8::Local<v8::Context> context, const std::string& stdlib
 			std::cerr << "Fatal: Failed to read " << path << "\n";
 			exit(1);
 		}
-		v8::ScriptOrigin origin(isolate, v8::String::NewFromUtf8(isolate, abs_path.c_str()).ToLocalChecked(), 0, 0, false, -1, {}, false, false, true);
+        v8::Local<v8::String> res_name = v8::String::NewFromUtf8(isolate, abs_path.c_str()).ToLocalChecked();
+        v8::ScriptOrigin origin(res_name, 0, 0, false, -1, v8::Local<v8::Value>(), false, false, true, v8::Local<v8::Data>());
 		v8::ScriptCompiler::Source source(v8::String::NewFromUtf8(isolate, code.c_str(), v8::NewStringType::kNormal, code.length()).ToLocalChecked(), origin);
 		v8::MaybeLocal<v8::Module> module = v8::ScriptCompiler::CompileModule(isolate, &source);
 		if (module.IsEmpty()) {
@@ -104,22 +111,13 @@ void LoadAndRunModules(v8::Local<v8::Context> context, const std::string& stdlib
 		return local_module;
 	};
 	
-	v8::Local<v8::Module> stdlib_module = load_module(stdlib_path_str);
-	v8::Local<v8::Module> entry_module = load_module(entry_path_str);
+    v8::Local<v8::Module> entry_module = load_module(entry_path_str);
 
-	if (stdlib_module->InstantiateModule(context, ResolveModuleCallback).IsNothing()) {
-		ReportException(isolate, try_catch);
-		exit(1);
-	}
-	 if (entry_module->InstantiateModule(context, ResolveModuleCallback).IsNothing()) {
+    if (entry_module->InstantiateModule(context, ResolveModuleCallback).IsNothing()) {
 		ReportException(isolate, try_catch);
 		exit(1);
 	}
 
-	if (stdlib_module->Evaluate(context).IsEmpty()) {
-		ReportException(isolate, try_catch);
-		exit(1);
-	}
 	if (entry_module->Evaluate(context).IsEmpty()) {
 		ReportException(isolate, try_catch);
 		exit(1);
