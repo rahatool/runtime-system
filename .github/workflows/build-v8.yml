@@ -33,6 +33,13 @@ jobs:
     runs-on: windows-latest
 
     steps:
+    # Install Git for Windows (needed by depot_tools)
+    - name: Install Git for Windows
+      run: |
+        choco install git -y --no-progress
+        refreshenv
+      shell: pwsh
+
     # Give this step an ID so we can reference its output path
     - name: Set up MSYS2
       id: setup-msys2
@@ -41,42 +48,28 @@ jobs:
         msystem: MINGW64
         update: true
         install: >-
-          git
           python
           mingw-w64-x86_64-toolchain
 
-    # FIX: Explicitly add the MSYS2 bin directory to the runner's PATH
-    - name: Add MSYS2 to PATH
-      run: echo "${{ steps.setup-msys2.outputs.msys2-path }}/usr/bin" >> $GITHUB_PATH
-      shell: bash
-
     - name: Checkout depot_tools
-      env:
-        PATH: "${{ steps.setup-msys2.outputs.msys2-path }}/usr/bin:${{ env.PATH }}"
       run: git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git C:/depot_tools
-      shell: msys2 {0}
+      shell: pwsh
       
     - name: Run gclient self-update
-      # FIX: Add env var to tell depot_tools to use the system git we just put on the PATH
       env:
-        DEPOT_TOOLS_USE_SYSTEM_GIT: 1
-        PATH: "${{ steps.setup-msys2.outputs.msys2-path }}/usr/bin:${{ env.PATH }}"
+        DEPOT_TOOLS_UPDATE: 0
       run: C:/depot_tools/gclient
-      shell: msys2 {0}
+      shell: pwsh
 
     - name: Fetch V8 Source Code
       env:
-        DEPOT_TOOLS_USE_SYSTEM_GIT: 1
-        PATH: "${{ steps.setup-msys2.outputs.msys2-path }}/usr/bin:${{ env.PATH }}"
+        DEPOT_TOOLS_UPDATE: 0
       run: C:/depot_tools/fetch v8
-      shell: msys2 {0}
+      shell: pwsh
       
     - name: Configure V8 Build (GN)
       id: configure_v8
       working-directory: v8
-      env:
-        DEPOT_TOOLS_USE_SYSTEM_GIT: 1
-        PATH: "${{ steps.setup-msys2.outputs.msys2-path }}/usr/bin:${{ env.PATH }}"
       run: |
         IS_DEBUG="false"
         if [ "${{ github.event.inputs.build_type }}" == "debug" ]; then
@@ -106,16 +99,11 @@ jobs:
 
     - name: Compile V8
       working-directory: v8
-      env:
-        DEPOT_TOOLS_USE_SYSTEM_GIT: 1
-        PATH: "${{ steps.setup-msys2.outputs.msys2-path }}/usr/bin:${{ env.PATH }}"
       run: C:/depot_tools/autoninja -C ${{ steps.configure_v8.outputs.output_dir }}
       shell: msys2 {0}
 
     - name: Package V8 Artifacts
       working-directory: v8
-      env:
-        PATH: "${{ steps.setup-msys2.outputs.msys2-path }}/usr/bin:${{ env.PATH }}"
       run: |
         mkdir -p package/lib
         mkdir -p package/include
