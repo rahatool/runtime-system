@@ -33,7 +33,9 @@ jobs:
     runs-on: windows-latest
 
     steps:
+    # Give this step an ID so we can reference its output path
     - name: Set up MSYS2
+      id: setup-msys2
       uses: msys2/setup-msys2@v2
       with:
         msystem: MINGW64
@@ -43,29 +45,33 @@ jobs:
           python
           mingw-w64-x86_64-toolchain
 
+    # FIX: Explicitly add the MSYS2 bin directory to the runner's PATH
+    - name: Add MSYS2 to PATH
+      run: echo "${{ steps.setup-msys2.outputs.msys2-path }}/usr/bin" >> $GITHUB_PATH
+      shell: bash
+
     - name: Checkout depot_tools
       run: git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git C:/depot_tools
       shell: msys2 {0}
-
-    # FIX: This step has been removed as it was unreliable.
-    # We will now use absolute paths to call depot_tools commands.
-    # - name: Add depot_tools to PATH
-    #   run: echo "C:/depot_tools" >> $GITHUB_PATH
-    #   shell: msys2 {0}
       
     - name: Run gclient self-update
-      # FIX: Use absolute path to gclient
+      # FIX: Add env var to tell depot_tools to use the system git we just put on the PATH
+      env:
+        DEPOT_TOOLS_USE_SYSTEM_GIT: 1
       run: C:/depot_tools/gclient
       shell: msys2 {0}
 
     - name: Fetch V8 Source Code
-      # FIX: Use absolute path to fetch
+      env:
+        DEPOT_TOOLS_USE_SYSTEM_GIT: 1
       run: C:/depot_tools/fetch v8
       shell: msys2 {0}
       
     - name: Configure V8 Build (GN)
       id: configure_v8
       working-directory: v8
+      env:
+        DEPOT_TOOLS_USE_SYSTEM_GIT: 1
       run: |
         IS_DEBUG="false"
         if [ "${{ github.event.inputs.build_type }}" == "debug" ]; then
@@ -90,13 +96,13 @@ jobs:
         echo 'use_lld = false' >> "$OUTPUT_DIR/args.gn"
         echo 'is_clang = false' >> "$OUTPUT_DIR/args.gn"
         
-        # FIX: Use absolute path to gn
         C:/depot_tools/gn gen "$OUTPUT_DIR"
       shell: msys2 {0}
 
     - name: Compile V8
       working-directory: v8
-      # FIX: Use absolute path to autoninja
+      env:
+        DEPOT_TOOLS_USE_SYSTEM_GIT: 1
       run: C:/depot_tools/autoninja -C ${{ steps.configure_v8.outputs.output_dir }}
       shell: msys2 {0}
 
