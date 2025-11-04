@@ -73,7 +73,7 @@ jobs:
       shell: msys2 {0}
     
     - name: Upload V8 Build Artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: v8-mingw-no-sandbox
         path: v8/package/
