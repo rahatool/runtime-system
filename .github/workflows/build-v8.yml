@@ -71,46 +71,51 @@ jobs:
       id: configure_v8
       working-directory: v8
       run: |
-        IS_DEBUG="false"
-        if [ "${{ github.event.inputs.build_type }}" == "debug" ]; then
-          IS_DEBUG="true"
-        fi
+        $IS_DEBUG = "false"
+        if ("${{ github.event.inputs.build_type }}" -eq "debug") {
+          $IS_DEBUG = "true"
+        }
         
-        IS_COMPONENT="false"
-        if [ "${{ github.event.inputs.linkage }}" == "component" ]; then
-          IS_COMPONENT="true"
-        fi
+        $IS_COMPONENT = "false"
+        if ("${{ github.event.inputs.linkage }}" -eq "component") {
+          $IS_COMPONENT = "true"
+        }
 
-        OUTPUT_DIR="out.gn/${{ github.event.inputs.target_cpu }}-${{ github.event.inputs.build_type }}-${{ github.event.inputs.linkage }}"
-        echo "output_dir=$OUTPUT_DIR" >> $GITHUB_OUTPUT
+        $OUTPUT_DIR = "out.gn/${{ github.event.inputs.target_cpu }}-${{ github.event.inputs.build_type }}-${{ github.event.inputs.linkage }}"
+        echo "output_dir=$OUTPUT_DIR" >> $env:GITHUB_OUTPUT
 
-        echo "is_debug = $IS_DEBUG" > "$OUTPUT_DIR/args.gn"
-        echo "is_component_build = $IS_COMPONENT" >> "$OUTPUT_DIR/args.gn"
-        echo "target_cpu = \"${{ github.event.inputs.target_cpu }}\"" >> "$OUTPUT_DIR/args.gn"
+        # Create output directory
+        New-Item -ItemType Directory -Force -Path $OUTPUT_DIR | Out-Null
+
+        # Write args.gn
+        @"
+        is_debug = $IS_DEBUG
+        is_component_build = $IS_COMPONENT
+        target_cpu = "${{ github.event.inputs.target_cpu }}"
+        v8_enable_sandbox = false
+        v8_use_external_startup_data = false
+        use_custom_libcxx = false
+        use_lld = false
+        is_clang = false
+        "@ | Out-File -FilePath "$OUTPUT_DIR/args.gn" -Encoding ASCII
         
-        echo 'v8_enable_sandbox = false' >> "$OUTPUT_DIR/args.gn"
-        echo 'v8_use_external_startup_data = false' >> "$OUTPUT_DIR/args.gn"
-        echo 'use_custom_libcxx = false' >> "$OUTPUT_DIR/args.gn"
-        echo 'use_lld = false' >> "$OUTPUT_DIR/args.gn"
-        echo 'is_clang = false' >> "$OUTPUT_DIR/args.gn"
-        
-        C:/depot_tools/gn gen "$OUTPUT_DIR"
-      shell: msys2 {0}
+        C:/depot_tools/gn gen $OUTPUT_DIR
+      shell: pwsh
 
     - name: Compile V8
       working-directory: v8
       run: C:/depot_tools/autoninja -C ${{ steps.configure_v8.outputs.output_dir }}
-      shell: msys2 {0}
+      shell: pwsh
 
     - name: Package V8 Artifacts
       working-directory: v8
       run: |
-        mkdir -p package/lib
-        mkdir -p package/include
+        New-Item -ItemType Directory -Force -Path package/lib | Out-Null
+        New-Item -ItemType Directory -Force -Path package/include | Out-Null
         
-        cp ${{ steps.configure_v8.outputs.output_dir }}/obj/v8_monolith.a package/lib/
-        cp -r include/* package/include/
-      shell: msys2 {0}
+        Copy-Item "${{ steps.configure_v8.outputs.output_dir }}/obj/v8_monolith.a" -Destination "package/lib/"
+        Copy-Item -Recurse "include/*" -Destination "package/include/"
+      shell: pwsh
     
     - name: Upload V8 Build Artifact
       uses: actions/upload-artifact@v4
