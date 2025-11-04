@@ -58,22 +58,27 @@ jobs:
     - name: Run gclient self-update
       env:
         DEPOT_TOOLS_UPDATE: 0
-      run: C:/depot_tools/gclient
+      run: |
+        $env:PATH = "C:\depot_tools;$env:PATH"
+        & "C:\depot_tools\gclient.bat"
       shell: pwsh
 
     - name: Fetch V8 Source Code
       env:
         DEPOT_TOOLS_UPDATE: 0
-      run: C:/depot_tools/fetch v8
+      run: |
+        $env:PATH = "C:\depot_tools;$env:PATH"
+        & "C:\depot_tools\fetch.bat" v8
       shell: pwsh
       
     - name: Verify V8 directory
       run: |
+        Write-Host "Current directory: $(Get-Location)"
         if (Test-Path "v8") {
-          Write-Host "v8 directory exists"
+          Write-Host "✓ v8 directory exists"
           Get-ChildItem v8 -Name | Select-Object -First 10
         } else {
-          Write-Host "v8 directory not found. Listing current directory:"
+          Write-Host "✗ v8 directory not found. Listing current directory:"
           Get-ChildItem -Name
         }
       shell: pwsh
@@ -111,13 +116,15 @@ jobs:
         is_clang = false
         "@ | Out-File -FilePath "$OUTPUT_DIR/args.gn" -Encoding ASCII
         
-        C:/depot_tools/gn gen $OUTPUT_DIR
+        $env:PATH = "C:\depot_tools;$env:PATH"
+        & "C:\depot_tools\gn.bat" gen $OUTPUT_DIR
       shell: pwsh
 
     - name: Compile V8
       run: |
         cd v8
-        C:/depot_tools/autoninja -C ${{ steps.configure_v8.outputs.output_dir }}
+        $env:PATH = "C:\depot_tools;$env:PATH"
+        & "C:\depot_tools\autoninja.bat" -C ${{ steps.configure_v8.outputs.output_dir }}
       shell: pwsh
 
     - name: Package V8 Artifacts
