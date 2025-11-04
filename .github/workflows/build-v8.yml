@@ -67,10 +67,22 @@ jobs:
       run: C:/depot_tools/fetch v8
       shell: pwsh
       
+    - name: Verify V8 directory
+      run: |
+        if (Test-Path "v8") {
+          Write-Host "v8 directory exists"
+          Get-ChildItem v8 -Name | Select-Object -First 10
+        } else {
+          Write-Host "v8 directory not found. Listing current directory:"
+          Get-ChildItem -Name
+        }
+      shell: pwsh
+      
     - name: Configure V8 Build (GN)
       id: configure_v8
-      working-directory: v8
       run: |
+        cd v8
+        
         $IS_DEBUG = "false"
         if ("${{ github.event.inputs.build_type }}" -eq "debug") {
           $IS_DEBUG = "true"
@@ -103,13 +115,15 @@ jobs:
       shell: pwsh
 
     - name: Compile V8
-      working-directory: v8
-      run: C:/depot_tools/autoninja -C ${{ steps.configure_v8.outputs.output_dir }}
+      run: |
+        cd v8
+        C:/depot_tools/autoninja -C ${{ steps.configure_v8.outputs.output_dir }}
       shell: pwsh
 
     - name: Package V8 Artifacts
-      working-directory: v8
       run: |
+        cd v8
+        
         New-Item -ItemType Directory -Force -Path package/lib | Out-Null
         New-Item -ItemType Directory -Force -Path package/include | Out-Null
         
