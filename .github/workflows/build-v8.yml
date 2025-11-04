@@ -1,0 +1,79 @@
+name: Build Custom V8 for Windows (MinGW)
+
+on:
+  # Allows you to run this workflow manually from the Actions tab on GitHub
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Set up MSYS2
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: MINGW64
+        update: true
+        install: >-
+          git
+          python
+          mingw-w64-x86_64-toolchain
+
+    - name: Checkout depot_tools
+      run: git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git C:/depot_tools
+      shell: msys2 {0}
+
+    - name: Add depot_tools to PATH
+      run: echo "C:/depot_tools" >> $GITHUB_PATH
+      shell: msys2 {0}
+      
+    - name: Run gclient self-update
+      # This is needed to make sure depot_tools is properly configured
+      run: gclient
+      shell: msys2 {0}
+
+    - name: Fetch V8 Source Code
+      run: fetch v8
+      shell: msys2 {0}
+      
+    - name: Configure V8 Build (GN)
+      working-directory: v8
+      run: |
+        # This writes our custom configuration into the args.gn file
+        echo 'is_debug = false' > out.gn/x64.release/args.gn
+        echo 'target_cpu = "x64"' >> out.gn/x64.release/args.gn
+        echo 'is_component_build = false' >> out.gn/x64.release/args.gn
+        echo 'v8_enable_sandbox = false' >> out.gn/x64.release/args.gn
+        echo 'v8_use_external_startup_data = false' >> out.gn/x64.release/args.gn
+        echo 'use_custom_libcxx = false' >> out.gn/x64.release/args.gn
+        echo 'use_lld = false' >> out.gn/x64.release/args.gn
+        echo 'is_clang = false' >> out.gn/x64.release/args.gn
+        
+        # Now run gn gen to generate the build files
+        gn gen out.gn/x64.release
+      shell: msys2 {0}
+
+    - name: Compile V8 (this will take a very long time)
+      working-directory: v8
+      run: autoninja -C out.gn/x64.release
+      shell: msys2 {0}
+
+    - name: Package V8 Artifacts
+      working-directory: v8
+      run: |
+        # Create a directory to hold the final package
+        mkdir -p package/lib
+        mkdir -p package/include
+        
+        # Copy the necessary libraries
+        cp out.gn/x64.release/obj/v8_monolith.a package/lib/
+        
+        # Copy the entire include directory
+        cp -r include/* package/include/
+      shell: msys2 {0}
+    
+    - name: Upload V8 Build Artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: v8-mingw-no-sandbox
+        path: v8/package/
