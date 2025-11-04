@@ -32,7 +32,9 @@ static void OnDNSCallback(uv_getaddrinfo_t* req, int status, addrinfo* res) {
 
 	v8::Isolate* isolate = context->fiber->isolate();
 	v8::HandleScope handle_scope(isolate);
-	v8::Local<v8::Context> v8_context = isolate->GetCurrentContext();
+	// All fibers share the same context. Use the fiber's stored context.
+	// GetCurrentContext() may be empty after stack switches, so use fiber's context directly
+	v8::Local<v8::Context> v8_context = context->fiber->context();
 
 	// Collect addresses matching requested family
 	std::vector<std::string> addrs;
@@ -51,6 +53,7 @@ static void OnDNSCallback(uv_getaddrinfo_t* req, int status, addrinfo* res) {
 	for (uint32_t i = 0; i < addrs.size(); ++i) {
 		arr->Set(v8_context, i, v8::String::NewFromUtf8(isolate, addrs[i].c_str()).ToLocalChecked()).Check();
 	}
+	// Context scope exits here, then Resume() is called (which doesn't enter context for simple values)
 	context->Resume(arr);
 	delete context;
 }

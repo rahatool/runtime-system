@@ -60,15 +60,19 @@ struct UDPHandle : public BaseHandle {
 struct TLSContextHandle : public BaseHandle {
 	SSL_CTX* ctx;
 	v8::Persistent<v8::Function> cert_resolver;
+	v8::Persistent<v8::Context> v8_context; // Store context for async callbacks
 	v8::Isolate* isolate;
 
-	TLSContextHandle(v8::Isolate* i, SSL_CTX* c, v8::Local<v8::Function> resolver) : ctx(c), isolate(i) {
+	TLSContextHandle(v8::Isolate* i, v8::Local<v8::Context> ctx_local, SSL_CTX* c, v8::Local<v8::Function> resolver) 
+		: ctx(c), isolate(i) {
+		v8_context.Reset(i, ctx_local);
 		cert_resolver.Reset(i, resolver);
 		SSL_CTX_set_ex_data(ctx, 0, this);
 	}
 	~TLSContextHandle() {
 		SSL_CTX_free(ctx);
 		cert_resolver.Reset();
+		v8_context.Reset();
 	}
 	void Close() override { /* No-op, managed by ~TLSContextHandle */ }
 };

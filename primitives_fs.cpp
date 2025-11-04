@@ -13,9 +13,12 @@ void FileHandle::Close() {
 }
 
 void DirectoryHandle::Close() {
-	// Free remaining string copies
+	// Free remaining string copies (only those not already freed)
     for (auto& entry : entries) {
-        free((void*)entry.name);
+        if (entry.name != nullptr) {
+            free((void*)entry.name);
+            entry.name = nullptr;
+        }
     }
 	entries.clear();
 }
@@ -275,6 +278,7 @@ void FS_DirRead(const v8::FunctionCallbackInfo<v8::Value>& args) {
 	entry->Set(context, v8::String::NewFromUtf8(isolate, "name").ToLocalChecked(), v8::String::NewFromUtf8(isolate, dent.name).ToLocalChecked()).Check();
 	entry->Set(context, v8::String::NewFromUtf8(isolate, "type").ToLocalChecked(), v8::Integer::New(isolate, dent.type)).Check();
     free((void*)dent.name); // Free the strdup'd name
+	dent.name = nullptr; // Mark as freed to avoid double-free in Close()
 	args.GetReturnValue().Set(entry);
 }
 

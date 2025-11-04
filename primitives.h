@@ -66,14 +66,20 @@ struct AsyncContext {
 	virtual ~AsyncContext() {} // Virtual destructor for safe cleanup
 
 	// Resumes the fiber with a non-error value
+	// NOTE: value must be created with context already entered if needed
 	void Resume(v8::Local<v8::Value> value) {
-		fiber->resume_value.Reset(fiber->isolate(), value);
+		// Don't enter context here - the callback should have already done it
+		// or the value should not require context (like v8::Undefined)
+		v8::Isolate* isolate = fiber->isolate();
+		v8::HandleScope handle_scope(isolate);
+		fiber->resume_value.Reset(isolate, value);
 		Fiber::resume(fiber);
 	}
 	// Resumes the fiber with an error
 	void ResumeError(int err, const char* syscall, const char* path = nullptr) {
 		v8::Isolate* isolate = fiber->isolate();
 		v8::HandleScope handle_scope(isolate);
+		// We're already in the context (from main.cpp)
 		std::string msg = std::string(syscall) + " " + uv_strerror(err);
 		if (path) {
 			msg += " (" + std::string(path) + ")";
@@ -86,6 +92,7 @@ struct AsyncContext {
 	void ResumeError(const char* message) {
 		v8::Isolate* isolate = fiber->isolate();
 		v8::HandleScope handle_scope(isolate);
+		// We're already in the context (from main.cpp)
 		v8::Local<v8::Value> error = v8::Exception::Error(v8::String::NewFromUtf8(isolate, message).ToLocalChecked());
 		fiber->resume_value.Reset(isolate, error);
 		Fiber::resume(fiber);

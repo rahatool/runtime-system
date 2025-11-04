@@ -69,6 +69,7 @@ int main(int argc, char* argv[]) {
 		v8::Context::Scope context_scope(context);
 
 		Fiber::init(isolate, uv_default_loop()); // Pass isolate to init
+		Fiber::set_main_context(context); // Set the main fiber's context
 		HandleStore::Init();
 
 		// Create the single __primordials object

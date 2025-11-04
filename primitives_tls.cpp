@@ -49,6 +49,8 @@ int OnCertCallback(SSL* ssl, void* arg) {
 
 	v8::Isolate* isolate = context->isolate;
 	v8::HandleScope handle_scope(isolate);
+	// This callback is called synchronously from JS code that's already in the context
+	// Don't use Context::Scope here - we're already in the context
 	v8::Local<v8::Context> v8_context = isolate->GetCurrentContext();
 	v8::Local<v8::Function> js_resolver = context->cert_resolver.Get(isolate);
 	
@@ -99,7 +101,8 @@ void TLS_CreateContext(const v8::FunctionCallbackInfo<v8::Value>& args) {
 	SSL_CTX_set_tlsext_servername_callback(ctx, OnCertCallback);
 	
 	// Create our handle and store the JS resolver function in it
-	auto handle = std::make_shared<TLSContextHandle>(isolate, ctx, resolver);
+	v8::Local<v8::Context> v8_context = isolate->GetCurrentContext();
+	auto handle = std::make_shared<TLSContextHandle>(isolate, v8_context, ctx, resolver);
 	uint64_t id = HandleStore::Add(handle);
 	args.GetReturnValue().Set(v8::BigInt::New(isolate, id));
 }

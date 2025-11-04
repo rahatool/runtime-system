@@ -10,7 +10,14 @@ uv_loop_t* Fiber::event_loop_ = nullptr;
 
 void Fiber::init(v8::Isolate* isolate, uv_loop_t* loop) {
 	event_loop_ = loop;
+	// Note: main fiber context will be set when main.cpp creates the context
 	main_fiber_ = new Fiber(isolate); // Create the main fiber, passing isolate
+}
+
+void Fiber::set_main_context(v8::Local<v8::Context> context) {
+	if (main_fiber_) {
+		main_fiber_->v8_context_.Reset(main_fiber_->isolate_, context);
+	}
 }
 
 Fiber* Fiber::get_current() { return current_fiber_; }
@@ -34,7 +41,9 @@ void Fiber::run() {
 	v8::Isolate::Scope isolate_scope(isolate_);
 	v8::HandleScope handle_scope(isolate_);
 	v8::Local<v8::Context> context = isolate_->GetCurrentContext();
-	v8::Context::Scope context_scope(context);
+	v8_context_.Reset(isolate_, context); // Store context for async callbacks
+	// DON'T use Context::Scope here - it conflicts with fiber switching
+	// All fibers share the same context, and we're already in it from main.cpp
 	v8::Local<v8::Function> func = func_.Get(isolate_);
 	v8::TryCatch try_catch(isolate_);
 
@@ -55,6 +64,7 @@ Fiber::Fiber(v8::Isolate* isolate) : isolate_(isolate), state_(NEW) {
 	current_fiber_ = this;
 	state_ = RUNNING;
 	js_object.Reset(isolate, v8::Object::New(isolate)); // Create persistent object
+	// Note: v8_context_ will be set when main.cpp creates the context and calls SetMainContext
 }
 
 // New fiber constructor
@@ -97,6 +107,7 @@ Fiber::Fiber(v8::Isolate* isolate) : isolate_(isolate), state_(NEW), stack_(null
 	current_fiber_ = this;
 	state_ = RUNNING;
 	js_object.Reset(isolate, v8::Object::New(isolate)); // Create persistent object
+	// Note: v8_context_ will be set when main.cpp creates the context and calls SetMainContext
 }
 
 // New fiber constructor

@@ -200,20 +200,24 @@ export class DirectoryHandle extends ExternalResource {
 // --- DNS ---
 
 function httpsGet(host, path) {
-	using socket = TLSSocket.connect(host, 443);
-	const request =
-		`GET ${path} HTTP/1.1\r\n` +
-		`Host: ${host}\r\n` +
-		`User-Agent: v8-runtime/1\r\n` +
-		`Accept: application/dns-json\r\n` +
-		`Connection: close\r\n` +
-		`\r\n`;
-	socket.writeAll(request.toBytes());
-	const response = socket.readAll().toString();
-	const sep = response.indexOf("\r\n\r\n");
-	check(sep !== -1, "Invalid HTTP response");
-	const body = response.slice(sep + 4);
-	return JSON.parse(body);
+	try {
+		using socket = TLSSocket.connect(host, 443);
+		const request =
+			`GET ${path} HTTP/1.1\r\n` +
+			`Host: ${host}\r\n` +
+			`User-Agent: v8-runtime/1\r\n` +
+			`Accept: application/dns-json\r\n` +
+			`Connection: close\r\n` +
+			`\r\n`;
+		socket.writeAll(request.toBytes());
+		const response = socket.readAll().toString();
+		const sep = response.indexOf("\r\n\r\n");
+		check(sep !== -1, "Invalid HTTP response");
+		const body = response.slice(sep + 4);
+		return JSON.parse(body);
+	} catch (fault) {
+		throw new Error(`HTTPS DNS lookup failed: ${fault.message}`);
+	}
 }
 
 const RRNUM = { A: 1, AAAA: 28, MX: 15, TXT: 16, CNAME: 5, NS: 2 };

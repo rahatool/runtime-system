@@ -23,6 +23,7 @@ public:
 	enum State { NEW, RUNNING, SUSPENDED, DONE };
 
 	static void init(v8::Isolate* isolate, uv_loop_t* loop); // Now takes isolate
+	static void set_main_context(v8::Local<v8::Context> context); // Set main fiber context
 	static Fiber* get_current();
 	static uv_loop_t* get_loop();
 
@@ -36,6 +37,7 @@ public:
 
 	v8::Persistent<v8::Value> resume_value;
 	v8::Persistent<v8::Object> js_object; // Unique object for this fiber
+	v8::Local<v8::Context> context() const { return v8_context_.Get(isolate_); }
 
 private:
 	// Private constructor for main fiber, now takes isolate
@@ -51,6 +53,7 @@ private:
 
 	v8::Isolate* isolate_;
 	v8::Persistent<v8::Function> func_;
+	v8::Persistent<v8::Context> v8_context_; // V8 context for this fiber
 	State state_;
 	platform_context_t context_;
 

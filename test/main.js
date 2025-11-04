@@ -3,9 +3,10 @@ import { Fiber, FileHandle, DirectoryHandle, dns, TCPServer, UDPSocket, TLSServe
 console.log("--- Advanced Runtime Starting (Full DNS, FS, SNI) ---");
 
 let fsExample = () => {
+	using directory = DirectoryHandle.open("../test");
 	try {
 		console.log("Reading directory '.' ...");
-		using directory = DirectoryHandle.open(".");
+		using directory = DirectoryHandle.open("../test");
 		for (const entry of directory) {
 			console.log(`Found: ${entry.name} (type: ${entry.type})`);
 		}
@@ -16,6 +17,11 @@ let fsExample = () => {
 
 let dnsExample = () => {
 	try {
+		console.log("Resolving 'google.com' A records...");
+		let a_records = dns.resolve('google.com', 'A');
+		console.log("Google A:", a_records[0]);
+		return;
+
 		console.log("Resolving 'google.com' AAAA records...");
 		const aaaa_records = dns.resolve('google.com', 'AAAA');
 		console.log("Google AAAA:", aaaa_records[0]);
@@ -158,10 +164,10 @@ let tlsClient = () => {
 };
 
 // Fiber.run(fsExample);
-Fiber.run(dnsExample);
+// Fiber.run(dnsExample);
 // Fiber.run(udpServer);
 // Fiber.run(udpClient);
 // Fiber.run(tcpServer);
-// Fiber.run(tcpClient);
+Fiber.run(tcpClient);
 // Fiber.run(tlsServer);
 // Fiber.run(tlsClient);

@@ -66,10 +66,15 @@ void OnRecv(uv_udp_t* handle, ssize_t nread, const uv_buf_t* buf, const struct s
 	uv_udp_recv_stop(handle);
 	wrap->pending_read = nullptr;
 
+	v8::Isolate* isolate = context->fiber->isolate();
+	v8::HandleScope handle_scope(isolate);
+	// We're already in the context (from main.cpp)
+
 	if (nread < 0) {
 		context->ResumeError(nread, "read");
 	} else if (nread == 0 && addr == nullptr) {
-		context->Resume(v8::Null(context->fiber->isolate())); // No data
+		v8::Local<v8::Value> value = v8::Null(isolate); // No data
+		context->Resume(value);
 	} else {
 		memcpy(&context->remote_addr, addr, sizeof(sockaddr_storage));
 		if (addr->sa_family == AF_INET) {
@@ -84,7 +89,8 @@ void OnRecv(uv_udp_t* handle, ssize_t nread, const uv_buf_t* buf, const struct s
 			context->port = ntohs(((const sockaddr_in6*)addr)->sin6_port);
 		}
 		// Return bytes read
-		context->Resume(v8::BigInt::New(context->fiber->isolate(), nread));
+		v8::Local<v8::Value> value = v8::BigInt::New(isolate, nread);
+		context->Resume(value);
 	}
 	// Don't delete context here, JS needs host/port
 }
