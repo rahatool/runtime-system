@@ -81,16 +81,14 @@ jobs:
         New-Item -ItemType Directory -Force -Path $OUTPUT_DIR | Out-Null
 
         # Write args.gn with fixed configuration
-        @"
-is_debug = false
-target_cpu = "x64"
-is_component_build = false
-v8_enable_sandbox = false
-v8_use_external_startup_data = false
-use_custom_libcxx = false
-use_lld = false
-is_clang = false
-        "@ | Out-File -FilePath "$OUTPUT_DIR/args.gn" -Encoding ASCII
+        "is_debug = false" | Out-File -FilePath "$OUTPUT_DIR/args.gn" -Encoding ASCII
+        "target_cpu = `"x64`"" | Out-File -FilePath "$OUTPUT_DIR/args.gn" -Encoding ASCII -Append
+        "is_component_build = false" | Out-File -FilePath "$OUTPUT_DIR/args.gn" -Encoding ASCII -Append
+        "v8_enable_sandbox = false" | Out-File -FilePath "$OUTPUT_DIR/args.gn" -Encoding ASCII -Append
+        "v8_use_external_startup_data = false" | Out-File -FilePath "$OUTPUT_DIR/args.gn" -Encoding ASCII -Append
+        "use_custom_libcxx = false" | Out-File -FilePath "$OUTPUT_DIR/args.gn" -Encoding ASCII -Append
+        "use_lld = false" | Out-File -FilePath "$OUTPUT_DIR/args.gn" -Encoding ASCII -Append
+        "is_clang = false" | Out-File -FilePath "$OUTPUT_DIR/args.gn" -Encoding ASCII -Append
         
         Write-Host "Generated args.gn:"
         Get-Content "$OUTPUT_DIR/args.gn"
