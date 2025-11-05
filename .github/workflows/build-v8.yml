@@ -1,4 +1,4 @@
-name: Build V8 (Configurable)
+name: Build V8 on Windows (Configurable)
 
 on:
   workflow_dispatch:
@@ -31,6 +31,8 @@ on:
 jobs:
   build-v8:
     runs-on: windows-latest
+    env:
+      DEPOT_TOOLS_WIN_TOOLCHAIN: 0
 
     steps:
       - name: Checkout repository
