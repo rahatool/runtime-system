@@ -74,7 +74,7 @@ jobs:
           is_clang = false
           "@ > args.gn
 
-          gn gen out/Build --args="`Get-Content args.gn | Out-String`"
+          gn gen out/Build --args="$(Get-Content args.gn -Raw)"
 
       - name: Build V8 with Ninja
         run: |
