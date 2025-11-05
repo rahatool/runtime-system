@@ -44,15 +44,17 @@ jobs:
     - name: Run gclient self-update
       env:
         DEPOT_TOOLS_UPDATE: 0
-        PATH: "C:\Program Files\Git\cmd;C:\depot_tools;$env:PATH"
-      run: C:/depot_tools/gclient
+      run: |
+        $env:PATH = "C:\Program Files\Git\cmd;C:\depot_tools;$env:PATH"
+        C:/depot_tools/gclient
       shell: pwsh
 
     - name: Fetch V8 Source Code
       env:
         DEPOT_TOOLS_UPDATE: 0
-        PATH: "C:\Program Files\Git\cmd;C:\depot_tools;$env:PATH"
-      run: C:/depot_tools/fetch v8
+      run: |
+        $env:PATH = "C:\Program Files\Git\cmd;C:\depot_tools;$env:PATH"
+        C:/depot_tools/fetch v8
       shell: pwsh
       
     - name: Verify V8 directory
@@ -98,9 +100,8 @@ is_clang = false
       shell: pwsh
 
     - name: Compile V8
-      env:
-        PATH: "C:\Program Files\Git\cmd;C:\depot_tools;$env:PATH"
       run: |
+        $env:PATH = "C:\Program Files\Git\cmd;C:\depot_tools;$env:PATH"
         cd v8
         C:/depot_tools/autoninja -C ${{ steps.configure_v8.outputs.output_dir }}
       shell: pwsh
