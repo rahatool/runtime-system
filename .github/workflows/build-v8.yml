@@ -1,32 +1,7 @@
-name: Build Custom V8 for Windows (MinGW)
+name: Build V8 for Windows (MinGW-x64-Release-Static)
 
 on:
   workflow_dispatch:
-    inputs:
-      build_type:
-        description: 'Build type'
-        required: true
-        default: 'release'
-        type: choice
-        options:
-        - release
-        - debug
-      linkage:
-        description: 'Linkage type'
-        required: true
-        default: 'static'
-        type: choice
-        options:
-        - static
-        - component
-      target_cpu:
-        description: 'Target CPU architecture'
-        required: true
-        default: 'x64'
-        type: choice
-        options:
-        - x64
-        - arm64
 
 jobs:
   build:
@@ -37,7 +12,16 @@ jobs:
     - name: Install Git for Windows
       run: |
         choco install git -y --no-progress
-        refreshenv
+        # Add Git to PATH for subsequent steps
+        $gitPath = "C:\Program Files\Git\cmd"
+        echo "$gitPath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      shell: pwsh
+
+    - name: Verify Git Installation
+      run: |
+        $env:PATH = "C:\Program Files\Git\cmd;$env:PATH"
+        git --version
+        Write-Host "Git is available at: $(Get-Command git | Select-Object -ExpandProperty Source)"
       shell: pwsh
 
     # Give this step an ID so we can reference its output path
@@ -52,23 +36,23 @@ jobs:
           mingw-w64-x86_64-toolchain
 
     - name: Checkout depot_tools
-      run: git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git C:/depot_tools
+      run: |
+        $env:PATH = "C:\Program Files\Git\cmd;$env:PATH"
+        git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git C:/depot_tools
       shell: pwsh
       
     - name: Run gclient self-update
       env:
         DEPOT_TOOLS_UPDATE: 0
-      run: |
-        $env:PATH = "C:\depot_tools;$env:PATH"
-        & "C:\depot_tools\gclient.bat"
+        PATH: "C:\Program Files\Git\cmd;C:\depot_tools;$env:PATH"
+      run: C:/depot_tools/gclient
       shell: pwsh
 
     - name: Fetch V8 Source Code
       env:
         DEPOT_TOOLS_UPDATE: 0
-      run: |
-        $env:PATH = "C:\depot_tools;$env:PATH"
-        & "C:\depot_tools\fetch.bat" v8
+        PATH: "C:\Program Files\Git\cmd;C:\depot_tools;$env:PATH"
+      run: C:/depot_tools/fetch v8
       shell: pwsh
       
     - name: Verify V8 directory
@@ -88,43 +72,37 @@ jobs:
       run: |
         cd v8
         
-        $IS_DEBUG = "false"
-        if ("${{ github.event.inputs.build_type }}" -eq "debug") {
-          $IS_DEBUG = "true"
-        }
-        
-        $IS_COMPONENT = "false"
-        if ("${{ github.event.inputs.linkage }}" -eq "component") {
-          $IS_COMPONENT = "true"
-        }
-
-        $OUTPUT_DIR = "out.gn/${{ github.event.inputs.target_cpu }}-${{ github.event.inputs.build_type }}-${{ github.event.inputs.linkage }}"
+        $OUTPUT_DIR = "out.gn/x64-release-static"
         echo "output_dir=$OUTPUT_DIR" >> $env:GITHUB_OUTPUT
 
         # Create output directory
         New-Item -ItemType Directory -Force -Path $OUTPUT_DIR | Out-Null
 
-        # Write args.gn
+        # Write args.gn with fixed configuration
         @"
-        is_debug = $IS_DEBUG
-        is_component_build = $IS_COMPONENT
-        target_cpu = "${{ github.event.inputs.target_cpu }}"
-        v8_enable_sandbox = false
-        v8_use_external_startup_data = false
-        use_custom_libcxx = false
-        use_lld = false
-        is_clang = false
+is_debug = false
+target_cpu = "x64"
+is_component_build = false
+v8_enable_sandbox = false
+v8_use_external_startup_data = false
+use_custom_libcxx = false
+use_lld = false
+is_clang = false
         "@ | Out-File -FilePath "$OUTPUT_DIR/args.gn" -Encoding ASCII
         
-        $env:PATH = "C:\depot_tools;$env:PATH"
-        & "C:\depot_tools\gn.bat" gen $OUTPUT_DIR
+        Write-Host "Generated args.gn:"
+        Get-Content "$OUTPUT_DIR/args.gn"
+        
+        $env:PATH = "C:\Program Files\Git\cmd;C:\depot_tools;$env:PATH"
+        C:/depot_tools/gn gen $OUTPUT_DIR
       shell: pwsh
 
     - name: Compile V8
+      env:
+        PATH: "C:\Program Files\Git\cmd;C:\depot_tools;$env:PATH"
       run: |
         cd v8
-        $env:PATH = "C:\depot_tools;$env:PATH"
-        & "C:\depot_tools\autoninja.bat" -C ${{ steps.configure_v8.outputs.output_dir }}
+        C:/depot_tools/autoninja -C ${{ steps.configure_v8.outputs.output_dir }}
       shell: pwsh
 
     - name: Package V8 Artifacts
@@ -141,5 +119,5 @@ jobs:
     - name: Upload V8 Build Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: v8-${{ github.event.inputs.target_cpu }}-${{ github.event.inputs.build_type }}-${{ github.event.inputs.linkage }}
+        name: v8-x64-release-static-mingw
         path: v8/package/
