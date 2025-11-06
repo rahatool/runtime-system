@@ -128,6 +128,10 @@ jobs:
 
       - name: Build OpenSSL
         run: |
+          # FIX: Explicitly initialize the MSVC environment within this script block.
+          # The '&' is PowerShell's call operator to execute the command.
+          & $env:VCVARS_PATH x64
+          
           git clone https://github.com/openssl/openssl.git
           cd openssl
           $linkage_opt = if ("${{ github.event.inputs.linkage_type }}" -eq "static") { "no-shared" } else { "" }
