@@ -1,0 +1,139 @@
+name: Build Third-Party Dependencies on Windows
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: "Build type"
+        required: true
+        default: "release"
+        type: choice
+        options: [release, debug]
+      linkage_type:
+        description: "Linkage type"
+        required: true
+        default: "static"
+        type: choice
+        options: [static, shared]
+      target_cpu:
+        description: "Target CPU architecture"
+        required: true
+        default: "x64"
+        type: choice
+        options: [x64, arm64]
+
+jobs:
+  v8:
+    runs-on: windows-latest
+    env:
+      DEPOT_TOOLS_WIN_TOOLCHAIN: 0
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          choco install -y git python ninja
+
+      - name: Setup depot_tools
+        run: |
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+          echo "${{ github.workspace }}\\depot_tools" >> $env:GITHUB_PATH
+
+      - name: Fetch V8
+        run: |
+          mkdir v8
+          cd v8
+          fetch v8
+          gclient sync
+
+      - name: Configure GN args
+        run: |
+          cd v8/v8
+          $is_debug    = if ($env:GITHUB_EVENT_INPUTS_BUILD_TYPE -eq "debug") { "true" } else { "false" }
+          $is_component = if ($env:GITHUB_EVENT_INPUTS_LINKAGE_TYPE -eq "shared") { "true" } else { "false" }
+          $cpu         = $env:GITHUB_EVENT_INPUTS_TARGET_CPU
+          $v8_external = if ($env:GITHUB_EVENT_INPUTS_LINKAGE_TYPE -eq "shared") { "true" } else { "false" }
+
+          @"
+          is_debug = $is_debug
+          target_cpu = "$cpu"
+          is_component_build = $is_component
+          v8_use_external_startup_data = $v8_external
+          icu_use_data_file = $v8_external
+          v8_enable_sandbox = false
+          use_custom_libcxx = false
+          use_lld = false
+          is_clang = false
+          "@ > args.gn
+
+          gn gen out/Build --args="$(Get-Content args.gn -Raw)"
+
+      - name: Build V8 with Ninja
+        run: |
+          cd v8/v8
+          ninja -C out/Build d8
+
+      - name: Prepare package
+        run: |
+          cd v8/v8
+          mkdir package
+          Get-ChildItem out/Build -Include *.dll,*.lib -File | Copy-Item -Destination package/
+          Copy-Item include package/include -Recurse
+          if ($env:GITHUB_EVENT_INPUTS_LINKAGE_TYPE -eq "shared") {
+            if (Test-Path out/Build/d8.exe) { Copy-Item out/Build/d8.exe package/ }
+            if (Test-Path out/Build/snapshot_blob.bin) { Copy-Item out/Build/snapshot_blob.bin package/ }
+            if (Test-Path out/Build/natives_blob.bin) { Copy-Item out/Build/natives_blob.bin package/ }
+          }
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: v8-${{ github.event.inputs.build_type }}-${{ github.event.inputs.linkage_type }}-${{ github.event.inputs.target_cpu }}
+          path: v8/v8/package/**
+
+  libuv:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build libuv
+        run: |
+          git clone https://github.com/libuv/libuv.git
+          cd libuv
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ github.event.inputs.build_type }}
+          cmake --build build --config ${{ github.event.inputs.build_type }}
+          mkdir package
+          Copy-Item build/${{ github.event.inputs.build_type }}/*.dll package/ -ErrorAction SilentlyContinue
+          Copy-Item build/${{ github.event.inputs.build_type }}/*.lib package/ -ErrorAction SilentlyContinue
+          Copy-Item include package/include -Recurse
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libuv-${{ github.event.inputs.build_type }}-${{ github.event.inputs.target_cpu }}
+          path: libuv/package/**
+
+  openssl:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build OpenSSL
+        run: |
+          git clone https://github.com/openssl/openssl.git
+          cd openssl
+          # Correctly select the shared/static linkage option
+          $linkage_opt = if ("${{ github.event.inputs.linkage_type }}" -eq "static") { "no-shared" } else { "" }
+          # Correctly select the debug/release build target
+          $build_target = if ("${{ github.event.inputs.build_type }}" -eq "debug") { "debug-VC-WIN64A" } else { "VC-WIN64A" }
+          
+          perl Configure $build_target $linkage_opt --prefix=$pwd/install
+          nmake
+          nmake install
+          mkdir package
+          Copy-Item install/bin/*.dll package/ -ErrorAction SilentlyContinue
+          Copy-Item install/lib/*.lib package/ -ErrorAction SilentlyContinue
+          Copy-Item install/include package/include -Recurse
+        shell: pwsh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openssl-${{ github.event.inputs.build_type }}-${{ github.event.inputs.target_cpu }}
+          path: openssl/package/**
