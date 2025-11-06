@@ -1,4 +1,4 @@
-name: Build Third-Party Dependencies on Windows
+name: Build All Windows Dependencies (MSVC)
 
 on:
   workflow_dispatch:
@@ -124,14 +124,10 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up MSVC developer environment
-        uses: microsoft/setup-msbuild@v2
+        uses: ilammy/msvc-dev-cmd@v1
 
       - name: Build OpenSSL
         run: |
-          # FIX: Explicitly initialize the MSVC environment within this script block.
-          # The '&' is PowerShell's call operator to execute the command.
-          & $env:VCVARS_PATH x64
-          
           git clone https://github.com/openssl/openssl.git
           cd openssl
           $linkage_opt = if ("${{ github.event.inputs.linkage_type }}" -eq "static") { "no-shared" } else { "" }
