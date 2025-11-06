@@ -79,7 +79,8 @@ jobs:
         run: |
           cd v8/v8
           mkdir package
-          Get-ChildItem out/Build -Include *.dll,*.lib -File | Copy-Item -Destination package/
+          Copy-Item out/Build/*.dll package/ -ErrorAction SilentlyContinue
+          Copy-Item out/Build/*.lib package/
           Copy-Item include package/include -Recurse
           if ($env:GITHUB_EVENT_INPUTS_LINKAGE_TYPE -eq "shared") {
             if (Test-Path out/Build/d8.exe) { Copy-Item out/Build/d8.exe package/ }
