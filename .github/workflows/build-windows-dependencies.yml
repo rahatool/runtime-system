@@ -96,7 +96,9 @@ jobs:
   libuv:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Build libuv
         run: |
           git clone https://github.com/libuv/libuv.git
@@ -108,7 +110,9 @@ jobs:
           Copy-Item build/${{ github.event.inputs.build_type }}/*.dll package/ -ErrorAction SilentlyContinue
           Copy-Item build/${{ github.event.inputs.build_type }}/*.lib package/ -ErrorAction SilentlyContinue
           Copy-Item include package/include -Recurse
-      - uses: actions/upload-artifact@v4
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
         with:
           name: libuv-${{ github.event.inputs.build_type }}-${{ github.event.inputs.linkage_type }}-${{ github.event.inputs.target_cpu }}
           path: libuv/package/**
@@ -116,20 +120,30 @@ jobs:
   openssl:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up MSVC developer environment
+        uses: microsoft/setup-msbuild@v2
+
       - name: Build OpenSSL
         run: |
           git clone https://github.com/openssl/openssl.git
           cd openssl
-          $shared = if ("${{ github.event.inputs.linkage_type }}" -eq "shared") { "ON" } else { "OFF" }
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ github.event.inputs.build_type }} -DBUILD_SHARED_LIBS=$shared
-          cmake --build build --config ${{ github.event.inputs.build_type }}
-          cmake --install build --prefix install
+          $linkage_opt = if ("${{ github.event.inputs.linkage_type }}" -eq "static") { "no-shared" } else { "" }
+          $build_target = if ("${{ github.event.inputs.build_type }}" -eq "debug") { "debug-VC-WIN64A" } else { "VC-WIN64A" }
+          
+          perl Configure $build_target $linkage_opt --prefix=$pwd/install
+          nmake
+          nmake install
           mkdir package
           Copy-Item install/bin/*.dll package/ -ErrorAction SilentlyContinue
           Copy-Item install/lib/*.lib package/ -ErrorAction SilentlyContinue
           Copy-Item install/include package/include -Recurse
-      - uses: actions/upload-artifact@v4
+        shell: pwsh
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
         with:
           name: openssl-${{ github.event.inputs.build_type }}-${{ github.event.inputs.target_cpu }}
           path: openssl/package/**
