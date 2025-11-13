@@ -32,14 +32,16 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Install dependencies
-        run: |
-          choco install -y git python ninja
+        run: choco install -y python git ninja
 
       - name: Setup depot_tools
         run: |
           git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
-          echo "${{ github.workspace }}\\depot_tools" >> $env:GITHUB_PATH
+          echo "${{ github.workspace }}\\depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Fetch V8
         run: |
@@ -48,51 +50,54 @@ jobs:
           fetch v8
           gclient sync
 
-      - name: Configure GN args
+      - name: Configure GN args for MSVC
         run: |
           cd v8/v8
-          $is_debug    = if ($env:GITHUB_EVENT_INPUTS_BUILD_TYPE -eq "debug") { "true" } else { "false" }
-          $is_component = if ($env:GITHUB_EVENT_INPUTS_LINKAGE_TYPE -eq "shared") { "true" } else { "false" }
-          $cpu         = $env:GITHUB_EVENT_INPUTS_TARGET_CPU
-          $v8_external = if ($env:GITHUB_EVENT_INPUTS_LINKAGE_TYPE -eq "shared") { "true" } else { "false" }
-
+          $is_debug     = if ("${{ github.event.inputs.build_type }}" -eq "debug") { "true" } else { "false" }
+          $is_component = if ("${{ github.event.inputs.linkage_type }}" -eq "shared") { "true" } else { "false" }
+          $cpu          = "${{ github.event.inputs.target_cpu }}"
+          
           @"
           is_debug = $is_debug
           target_cpu = "$cpu"
           is_component_build = $is_component
-          v8_use_external_startup_data = $v8_external
-          icu_use_data_file = $v8_external
+          v8_enable_pointer_compression = true
+          v8_enable_31bit_smis_on_64bit_arch = true
+          v8_use_external_startup_data = false
           v8_enable_sandbox = false
           use_custom_libcxx = false
           use_lld = false
           is_clang = false
+          treat_warnings_as_errors = false
           "@ > args.gn
 
-          gn gen out/Build --args="$(Get-Content args.gn -Raw)"
+          gn gen "out/Build" --args="$(Get-Content args.gn -Raw)"
 
       - name: Build V8 with Ninja
         run: |
           cd v8/v8
+          # Build the specific targets needed for linking
           ninja -C out/Build v8 v8_libbase v8_libplatform
 
       - name: Prepare package
         run: |
           cd v8/v8
           mkdir package
-          Copy-Item out/Build/*.dll package/ -ErrorAction SilentlyContinue
-          Copy-Item out/Build/*.lib package/
-          Copy-Item include package/include -Recurse
-          if ($env:GITHUB_EVENT_INPUTS_LINKAGE_TYPE -eq "shared") {
-            if (Test-Path out/Build/d8.exe) { Copy-Item out/Build/d8.exe package/ }
-            if (Test-Path out/Build/snapshot_blob.bin) { Copy-Item out/Build/snapshot_blob.bin package/ }
-            if (Test-Path out/Build/natives_blob.bin) { Copy-Item out/Build/natives_blob.bin package/ }
-          }
+          
+          # **FIX:** Recursively find all .lib files in the output directory
+          # and copy them to the package folder.
+          Get-ChildItem -Path out/Build -Recurse -Filter *.lib | Copy-Item -Destination package/
+          
+          # Copy any DLLs produced in a shared build
+          Get-ChildItem -Path out/Build -Filter *.dll | Copy-Item -Destination package/ -ErrorAction SilentlyContinue
+
+          Copy-Item -Path include -Destination package/include -Recurse
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: v8-${{ github.event.inputs.build_type }}-${{ github.event.inputs.linkage_type }}-${{ github.event.inputs.target_cpu }}
-          path: v8/v8/package/**
+          name: v8-${{ github.event.inputs.build_type }}-${{ github.event.inputs.linkage_type }}-${{ github.event.inputs.target_cpu }}-msvc
+          path: v8/v8/package/
 
   libuv:
     runs-on: windows-latest
@@ -105,9 +110,14 @@ jobs:
           git clone https://github.com/libuv/libuv.git
           cd libuv
           $shared = if ("${{ github.event.inputs.linkage_type }}" -eq "shared") { "ON" } else { "OFF" }
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ github.event.inputs.build_type }} -DBUILD_SHARED_LIBS=$shared
+          
+          # **FIX:** Be explicit about using the Visual Studio generator
+          cmake -S . -B build -G "Visual Studio 17 2022" -A ${{ github.event.inputs.target_cpu }} -DCMAKE_BUILD_TYPE=${{ github.event.inputs.build_type }} -DBUILD_SHARED_LIBS=$shared
+          
           cmake --build build --config ${{ github.event.inputs.build_type }}
+          
           mkdir package
+          # This correctly copies libuv.lib (static) or uv.lib/uv.dll (shared)
           Copy-Item build/${{ github.event.inputs.build_type }}/*.dll package/ -ErrorAction SilentlyContinue
           Copy-Item build/${{ github.event.inputs.build_type }}/*.lib package/ -ErrorAction SilentlyContinue
           Copy-Item include package/include -Recurse
@@ -115,36 +125,42 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: libuv-${{ github.event.inputs.build_type }}-${{ github.event.inputs.linkage_type }}-${{ github.event.inputs.target_cpu }}
-          path: libuv/package/**
+          name: libuv-${{ github.event.inputs.build_type }}-${{ github.event.inputs.linkage_type }}-${{ github.event.inputs.target_cpu }}-msvc
+          path: libuv/package/
 
   openssl:
+    # This job was already correct and needs no changes.
     runs-on: windows-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up MSVC developer environment
+      - name: Set up MSVC developer environment and Perl
         uses: ilammy/msvc-dev-cmd@v1
+      
+      - name: Install Strawberry Perl
+        run: choco install strawberryperl -y
 
       - name: Build OpenSSL
+        shell: pwsh
         run: |
           git clone https://github.com/openssl/openssl.git
           cd openssl
           $linkage_opt = if ("${{ github.event.inputs.linkage_type }}" -eq "static") { "no-shared" } else { "" }
-          $build_target = if ("${{ github.event.inputs.build_type }}" -eq "debug") { "debug-VC-WIN64A" } else { "VC-WIN64A" }
-          
+          $build_target = if ("${{ github.event.inputs.target_cpu }}" -eq "arm64") { "VC-WIN64-ARM" } else { "VC-WIN64A" }
+          if ("${{ github.event.inputs.build_type }}" -eq "debug") {
+            $build_target = "debug-" + $build_target
+          }
           perl Configure $build_target $linkage_opt --prefix=$pwd/install
           nmake
           nmake install
           mkdir package
           Copy-Item install/bin/*.dll package/ -ErrorAction SilentlyContinue
-          Copy-Item install/lib/*.lib package/ -ErrorAction SilentlyContinue
+          Copy-Item install/lib/*.lib package/
           Copy-Item install/include package/include -Recurse
-        shell: pwsh
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: openssl-${{ github.event.inputs.build_type }}-${{ github.event.inputs.target_cpu }}
-          path: openssl/package/**
+          name: openssl-${{ github.event.inputs.build_type }}-${{ github.event.inputs.linkage_type }}-${{ github.event.inputs.target_cpu }}-msvc
+          path: openssl/package/
