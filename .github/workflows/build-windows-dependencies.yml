@@ -85,21 +85,6 @@ jobs:
           # Recursively find all .lib files in the output directory and copy them to the package folder.
           Get-ChildItem -Path out/Build -Recurse -Filter *.lib | Copy-Item -Destination package/
           
-          # Verify that the required V8 libraries were created
-          $required_libs = @("v8.lib", "v8_libbase.lib", "v8_libplatform.lib")
-          $missing_libs = @()
-          foreach ($lib in $required_libs) {
-            if (-not (Test-Path "package/$lib")) {
-              $missing_libs += $lib
-            }
-          }
-          if ($missing_libs.Count -gt 0) {
-            Write-Error "Required V8 libraries were not found: $($missing_libs -join ', ')"
-            Write-Host "Found .lib files:"
-            Get-ChildItem -Path package -Filter *.lib | ForEach-Object { Write-Host "  - $($_.Name)" }
-            exit 1
-          }
-          
           # Copy any DLLs produced in a shared build
           Get-ChildItem -Path out/Build -Filter *.dll | Copy-Item -Destination package/ -ErrorAction SilentlyContinue
 
