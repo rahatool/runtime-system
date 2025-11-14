@@ -77,7 +77,7 @@ jobs:
         run: |
           cd v8/v8
           # Build the specific targets needed for linking
-          ninja -C out/Build v8 v8_libbase v8_libplatform
+          ninja -C out/Build v8_monolith v8_libbase v8_libplatform
 
       - name: Prepare package
         run: |
