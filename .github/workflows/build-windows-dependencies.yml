@@ -80,15 +80,14 @@ jobs:
         run: |
           cd v8/v8
           # Build the specific targets needed for linking
-          ninja -C out/Build v8 v8_libbase v8_libplatform
+          ninja -C out/Build v8_monolith v8_libbase v8_libplatform
 
       - name: Prepare package
         run: |
           cd v8/v8
           mkdir package
           
-          # **FIX:** Recursively find all .lib files in the output directory
-          # and copy them to the package folder.
+          # Recursively find all .lib files in the output directory and copy them to the package folder.
           Get-ChildItem -Path out/Build -Recurse -Filter *.lib | Copy-Item -Destination package/
           
           # Copy any DLLs produced in a shared build
@@ -114,7 +113,7 @@ jobs:
           cd libuv
           $shared = if ("${{ github.event.inputs.linkage_type }}" -eq "shared") { "ON" } else { "OFF" }
           
-          # **FIX:** Be explicit about using the Visual Studio generator
+          # Be explicit about using the Visual Studio generator
           cmake -S . -B build -G "Visual Studio 17 2022" -A ${{ github.event.inputs.target_cpu }} -DCMAKE_BUILD_TYPE=${{ github.event.inputs.build_type }} -DBUILD_SHARED_LIBS=$shared
           
           cmake --build build --config ${{ github.event.inputs.build_type }}
