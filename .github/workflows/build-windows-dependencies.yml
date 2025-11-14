@@ -65,13 +65,8 @@ jobs:
           v8_enable_31bit_smis_on_64bit_arch = true
           v8_use_external_startup_data = false
           v8_enable_sandbox = false
-          use_custom_libcxx = false
-          use_lld = false
           is_clang = false
           treat_warnings_as_errors = false
-
-          # This tells GN to create a single v8_monolith.lib for the 'v8' target.
-          v8_monolithic = true
           "@ > args.gn
 
           gn gen "out/Build" --args="$(Get-Content args.gn -Raw)"
@@ -79,8 +74,8 @@ jobs:
       - name: Build V8 with Ninja
         run: |
           cd v8/v8
-          # Build the specific targets needed for linking
-          ninja -C out/Build v8_monolith v8_libbase v8_libplatform
+          # Build the separate V8 library targets (non-monolithic mode)
+          ninja -C out/Build v8
 
       - name: Prepare package
         run: |
@@ -89,6 +84,21 @@ jobs:
           
           # Recursively find all .lib files in the output directory and copy them to the package folder.
           Get-ChildItem -Path out/Build -Recurse -Filter *.lib | Copy-Item -Destination package/
+          
+          # Verify that the required V8 libraries were created
+          $required_libs = @("v8.lib", "v8_libbase.lib", "v8_libplatform.lib")
+          $missing_libs = @()
+          foreach ($lib in $required_libs) {
+            if (-not (Test-Path "package/$lib")) {
+              $missing_libs += $lib
+            }
+          }
+          if ($missing_libs.Count -gt 0) {
+            Write-Error "Required V8 libraries were not found: $($missing_libs -join ', ')"
+            Write-Host "Found .lib files:"
+            Get-ChildItem -Path package -Filter *.lib | ForEach-Object { Write-Host "  - $($_.Name)" }
+            exit 1
+          }
           
           # Copy any DLLs produced in a shared build
           Get-ChildItem -Path out/Build -Filter *.dll | Copy-Item -Destination package/ -ErrorAction SilentlyContinue
