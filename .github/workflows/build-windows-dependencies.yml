@@ -69,6 +69,9 @@ jobs:
           use_lld = false
           is_clang = false
           treat_warnings_as_errors = false
+
+          # This tells GN to create a single v8_monolith.lib for the 'v8' target.
+          v8_monolithic = true
           "@ > args.gn
 
           gn gen "out/Build" --args="$(Get-Content args.gn -Raw)"
@@ -77,7 +80,7 @@ jobs:
         run: |
           cd v8/v8
           # Build the specific targets needed for linking
-          ninja -C out/Build v8_monolith v8_libbase v8_libplatform
+          ninja -C out/Build v8 v8_libbase v8_libplatform
 
       - name: Prepare package
         run: |
