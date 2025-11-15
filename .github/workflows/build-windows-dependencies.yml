@@ -61,6 +61,7 @@ jobs:
           is_debug = $is_debug
           target_cpu = "$cpu"
           is_component_build = $is_component
+          v8_monolithic = true
           v8_enable_pointer_compression = true
           v8_enable_31bit_smis_on_64bit_arch = true
           v8_use_external_startup_data = false
@@ -74,8 +75,8 @@ jobs:
       - name: Build V8 with Ninja
         run: |
           cd v8/v8
-          # Build the separate V8 library targets (non-monolithic mode)
-          ninja -C out/Build v8
+          # Build the monolithic V8 library (produces v8_monolith.lib)
+          ninja -C out/Build v8_monolith
 
       - name: Prepare package
         run: |
