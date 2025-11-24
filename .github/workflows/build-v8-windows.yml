@@ -1,0 +1,174 @@
+name: Build V8 for Windows (Fiber Support)
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build Configuration'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+          - release
+          - debug
+      linkage_type:
+        description: 'Linkage Type'
+        required: true
+        default: 'static'
+        type: choice
+        options:
+          - static
+          - shared
+      target_arch:
+        description: 'Target CPU Architecture'
+        required: true
+        default: 'x64'
+        type: choice
+        options:
+          - x64
+          - x86
+          - arm64
+      v8_version:
+        description: 'V8 Version (Tag or Branch, e.g., 12.0.267.8)'
+        required: true
+        default: 'main'
+        type: string
+
+jobs:
+  build-windows:
+    name: Windows MSVC (${{ inputs.target_arch }} - ${{ inputs.linkage_type }} - ${{ inputs.build_type }})
+    runs-on: windows-latest
+    # V8 builds are massive; 6 hours is a safe buffer
+    timeout-minutes: 360 
+
+    env:
+      # 0 = Use local Visual Studio (MSVC); 1 = Download Google's hermetic toolchain
+      DEPOT_TOOLS_WIN_TOOLCHAIN: '0'
+      PYTHONIOENCODING: 'utf-8'
+
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11' 
+
+      - name: Install Depot Tools
+        shell: powershell
+        run: |
+          # Depot Tools is required to fetch and build V8
+          Invoke-WebRequest -Uri "https://storage.googleapis.com/chrome-infra/depot_tools.zip" -OutFile "depot_tools.zip"
+          Expand-Archive -Path "depot_tools.zip" -DestinationPath "C:\depot_tools"
+          
+          # Add to GITHUB_PATH so subsequent steps can find 'gclient', 'gn', etc.
+          "C:\depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Initialize Depot Tools
+        shell: powershell
+        run: |
+          # Running gclient once initializes the tools (downloads git, python, etc.)
+          $env:PATH = "C:\depot_tools;" + $env:PATH
+          gclient --version
+
+      - name: Fetch V8 Source Code
+        shell: powershell
+        working-directory: ${{ github.workspace }}
+        run: |
+          $env:PATH = "C:\depot_tools;" + $env:PATH
+          # fetch v8 creates a 'v8' folder
+          fetch v8
+          cd v8
+          git checkout ${{ inputs.v8_version }}
+          # Sync dependencies (ICU, zlib, etc.)
+          gclient sync
+
+      - name: Generate Build Arguments (GN)
+        shell: powershell
+        id: gn_args
+        run: |
+          # --- BASIC SETUP ---
+          $args = "is_component_build=${{ inputs.linkage_type == 'shared' && 'true' || 'false' }} "
+          $args += "is_debug=${{ inputs.build_type == 'debug' && 'true' || 'false' }} "
+          $args += "target_cpu=""${{ inputs.target_arch }}"" "
+          $args += "target_os=""win"" "
+
+          # --- MSVC COMPATIBILITY ---
+          # Use local MSVC cl.exe instead of clang-cl
+          $args += "is_clang=false "
+          # Use the system CRT (MSVCRT) instead of V8's bundled libc++
+          $args += "use_custom_libcxx=false "
+          
+          # --- FIBER / COROUTINE SUPPORT (CRITICAL) ---
+          # Disable pointer compression on x64 so V8 can handle stack switching
+          # to memory regions outside the 4GB compressed heap.
+          if ("${{ inputs.target_arch }}" -eq "x64") {
+             $args += "v8_enable_pointer_compression=false "
+             $args += "v8_enable_31bit_smis_on_64bit_arch=false "
+          }
+          # Disable the V8 sandbox as it conflicts with manual stack management
+          $args += "v8_enable_sandbox=false "
+
+          # --- STATIC VS SHARED ---
+          if ("${{ inputs.linkage_type }}" -eq "static") {
+             # Monolith bundles v8, v8_libbase, v8_libplatform into one big .lib
+             $args += "v8_monolithic=true "
+             $args += "v8_use_external_startup_data=false " 
+          }
+
+          # --- OPTIMIZATIONS ---
+          $args += "v8_enable_tests=false "
+          $args += "symbol_level=${{ inputs.build_type == 'debug' && '2' || '0' }} "
+
+          Write-Host "Generated Args: $args"
+          echo "ARGS=$args" >> $env:GITHUB_OUTPUT
+
+      - name: Generate Build Files
+        shell: powershell
+        working-directory: ${{ github.workspace }}\v8
+        run: |
+          $env:PATH = "C:\depot_tools;" + $env:PATH
+          gn gen out.gn/build --args="${{ steps.gn_args.outputs.ARGS }}"
+
+      - name: Compile V8
+        shell: powershell
+        working-directory: ${{ github.workspace }}\v8
+        run: |
+          $env:PATH = "C:\depot_tools;" + $env:PATH
+          # Build target depends on static vs shared
+          $target = "${{ inputs.linkage_type == 'static' && 'v8_monolith' || 'v8' }}"
+          autoninja -C out.gn/build $target
+
+      - name: Organize Artifacts
+        shell: powershell
+        working-directory: ${{ github.workspace }}
+        run: |
+          New-Item -ItemType Directory -Force -Path "artifacts\lib"
+          New-Item -ItemType Directory -Force -Path "artifacts\include"
+          New-Item -ItemType Directory -Force -Path "artifacts\bin"
+
+          # 1. Copy Headers
+          Copy-Item -Path "v8\include\*" -Destination "artifacts\include" -Recurse
+
+          # 2. Copy Libs (.lib)
+          $buildDir = "v8\out.gn\build"
+          Get-ChildItem -Path $buildDir -Filter "*.lib" | ForEach-Object {
+            Copy-Item -Path $_.FullName -Destination "artifacts\lib"
+          }
+
+          # 3. Copy DLLs and PDBs (if they exist)
+          Get-ChildItem -Path $buildDir -Filter "*.dll" | ForEach-Object {
+            Copy-Item -Path $_.FullName -Destination "artifacts\bin"
+          }
+          Get-ChildItem -Path $buildDir -Filter "*.pdb" | ForEach-Object {
+             Copy-Item -Path $_.FullName -Destination "artifacts\bin"
+          }
+          
+          # 4. Copy ICU data (required for Shared builds usually)
+          if (Test-Path "$buildDir\icudtl.dat") {
+            Copy-Item -Path "$buildDir\icudtl.dat" -Destination "artifacts\bin"
+          }
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: v8-win-${{ inputs.target_arch }}-${{ inputs.linkage_type }}-${{ inputs.build_type }}
+          path: artifacts/
