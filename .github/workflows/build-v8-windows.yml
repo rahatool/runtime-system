@@ -1,4 +1,4 @@
-name: Build V8 for Windows (Fiber Support)
+name: Build V8 Windows (Fiber Support)
 
 on:
   workflow_dispatch:
@@ -29,21 +29,19 @@ on:
           - x86
           - arm64
       v8_version:
-        description: 'V8 Version (Tag or Branch, e.g., 12.0.267.8)'
+        description: 'V8 Version (Tag or Branch)'
         required: true
-        default: 'main'
+        default: '12.4.254.15'
         type: string
 
 jobs:
-  build-windows:
-    name: Windows MSVC (${{ inputs.target_arch }} - ${{ inputs.linkage_type }} - ${{ inputs.build_type }})
+  build-v8:
+    name: Build V8 (${{ inputs.target_arch }} - ${{ inputs.linkage_type }} - ${{ inputs.build_type }})
     runs-on: windows-latest
-    # V8 builds are massive; 6 hours is a safe buffer
     timeout-minutes: 360 
 
     env:
-      # 0 = Use local Visual Studio (MSVC); 1 = Download Google's hermetic toolchain
-      DEPOT_TOOLS_WIN_TOOLCHAIN: '0'
+      DEPOT_TOOLS_WIN_TOOLCHAIN: '0' # Use local Visual Studio
       PYTHONIOENCODING: 'utf-8'
 
     steps:
@@ -55,89 +53,97 @@ jobs:
       - name: Install Depot Tools
         shell: powershell
         run: |
-          # Depot Tools is required to fetch and build V8
           Invoke-WebRequest -Uri "https://storage.googleapis.com/chrome-infra/depot_tools.zip" -OutFile "depot_tools.zip"
           Expand-Archive -Path "depot_tools.zip" -DestinationPath "C:\depot_tools"
-          
-          # Add to GITHUB_PATH so subsequent steps can find 'gclient', 'gn', etc.
           "C:\depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Append
 
       - name: Initialize Depot Tools
         shell: powershell
         run: |
-          # Running gclient once initializes the tools (downloads git, python, etc.)
           $env:PATH = "C:\depot_tools;" + $env:PATH
           gclient --version
 
-      - name: Fetch V8 Source Code
+      - name: Fetch V8 Source
         shell: powershell
         working-directory: ${{ github.workspace }}
         run: |
           $env:PATH = "C:\depot_tools;" + $env:PATH
-          # fetch v8 creates a 'v8' folder
           fetch v8
           cd v8
           git checkout ${{ inputs.v8_version }}
-          # Sync dependencies (ICU, zlib, etc.)
           gclient sync
 
-      - name: Generate Build Arguments (GN)
+      - name: Generate GN Args
         shell: powershell
         id: gn_args
         run: |
-          # --- BASIC SETUP ---
-          $args = "is_component_build=${{ inputs.linkage_type == 'shared' && 'true' || 'false' }} "
-          $args += "is_debug=${{ inputs.build_type == 'debug' && 'true' || 'false' }} "
-          $args += "target_cpu=""${{ inputs.target_arch }}"" "
-          $args += "target_os=""win"" "
+          # --- HELPER: Escape quotes for GN (target_cpu="x64" -> target_cpu=\"x64\") ---
+          function GnStr { param($k, $v) return "$k=\`"$v\`"" }
+          function GnBool { param($k, $v) return "$k=$v" }
+
+          $a = @()
+
+          # --- CORE BUILD SETTINGS ---
+          $a += GnBool "is_component_build" ("${{ inputs.linkage_type }}" -eq "shared" ? "true" : "false")
+          $a += GnBool "is_debug"           ("${{ inputs.build_type }}" -eq "debug" ? "true" : "false")
+          $a += GnStr  "target_cpu"         "${{ inputs.target_arch }}"
+          $a += GnStr  "target_os"          "win"
 
           # --- MSVC COMPATIBILITY ---
-          # Use local MSVC cl.exe instead of clang-cl
-          $args += "is_clang=false "
-          # Use the system CRT (MSVCRT) instead of V8's bundled libc++
-          $args += "use_custom_libcxx=false "
+          $a += GnBool "is_clang"          "false"
+          $a += GnBool "use_custom_libcxx" "false"
+
+          # --- FIBJS / FIBER STABILITY FLAGS (FROM LIST) ---
+          $a += GnBool "v8_enable_turbofan"              "true"
+          $a += GnBool "cppgc_enable_caged_heap"         "false" # Essential for Fibers
+          $a += GnBool "v8_enable_pointer_compression"   "false" # Essential for Fibers
+          $a += GnBool "v8_enable_sandbox"               "false" # Essential for Fibers
+          $a += GnBool "v8_control_flow_integrity"       "false" # Essential for Stack Switch
+          $a += GnBool "v8_use_external_startup_data"    "false"
+          $a += GnBool "v8_use_libm_trig_functions"      "false"
+          $a += GnBool "v8_enable_short_builtin_calls"   "false"
+          $a += GnBool "v8_enable_lazy_source_positions" "false"
+          $a += GnBool "v8_enable_allocation_folding"    "false"
+          $a += GnBool "v8_allocation_site_tracking"     "false"
+          $a += GnBool "v8_enable_system_instrumentation" "false"
+          $a += GnBool "v8_enable_lite_mode"             "false"
+          $a += GnBool "v8_enable_gdbjit"                "false"
+          $a += GnBool "v8_enable_webassembly"           "true"
           
-          # --- FIBER / COROUTINE SUPPORT (CRITICAL) ---
-          # Disable pointer compression on x64 so V8 can handle stack switching
-          # to memory regions outside the 4GB compressed heap.
-          if ("${{ inputs.target_arch }}" -eq "x64") {
-             $args += "v8_enable_pointer_compression=false "
-             $args += "v8_enable_31bit_smis_on_64bit_arch=false "
-          }
-          # Disable the V8 sandbox as it conflicts with manual stack management
-          $args += "v8_enable_sandbox=false "
+          # Note: 'v8_use_zlib=false' is omitted to allow build to use internal zlib.
+          # If set to false, you must provide system zlib paths, or the build fails.
 
-          # --- STATIC VS SHARED ---
+          # --- STATIC / MONOLITH ---
           if ("${{ inputs.linkage_type }}" -eq "static") {
-             # Monolith bundles v8, v8_libbase, v8_libplatform into one big .lib
-             $args += "v8_monolithic=true "
-             $args += "v8_use_external_startup_data=false " 
+             $a += GnBool "v8_monolithic" "true"
           }
 
-          # --- OPTIMIZATIONS ---
-          $args += "v8_enable_tests=false "
-          $args += "symbol_level=${{ inputs.build_type == 'debug' && '2' || '0' }} "
+          # --- CLEANUP ---
+          $a += GnBool "v8_deprecation_warnings"          "false"
+          $a += GnBool "v8_imminent_deprecation_warnings" "false"
+          $a += GnBool "v8_enable_tests"                  "false"
+          $a += GnBool "symbol_level"                     ("${{ inputs.build_type }}" -eq "debug" ? "2" : "0")
 
-          Write-Host "Generated Args: $args"
-          echo "ARGS=$args" >> $env:GITHUB_OUTPUT
+          $finalArgs = $a -join " "
+          Write-Host "Args: $finalArgs"
+          echo "ARGS=$finalArgs" >> $env:GITHUB_OUTPUT
 
-      - name: Generate Build Files
+      - name: Configure Build
         shell: powershell
         working-directory: ${{ github.workspace }}\v8
         run: |
           $env:PATH = "C:\depot_tools;" + $env:PATH
           gn gen out.gn/build --args="${{ steps.gn_args.outputs.ARGS }}"
 
-      - name: Compile V8
+      - name: Compile
         shell: powershell
         working-directory: ${{ github.workspace }}\v8
         run: |
           $env:PATH = "C:\depot_tools;" + $env:PATH
-          # Build target depends on static vs shared
           $target = "${{ inputs.linkage_type == 'static' && 'v8_monolith' || 'v8' }}"
           autoninja -C out.gn/build $target
 
-      - name: Organize Artifacts
+      - name: Collect Artifacts
         shell: powershell
         working-directory: ${{ github.workspace }}
         run: |
@@ -145,29 +151,14 @@ jobs:
           New-Item -ItemType Directory -Force -Path "artifacts\include"
           New-Item -ItemType Directory -Force -Path "artifacts\bin"
 
-          # 1. Copy Headers
           Copy-Item -Path "v8\include\*" -Destination "artifacts\include" -Recurse
 
-          # 2. Copy Libs (.lib)
-          $buildDir = "v8\out.gn\build"
-          Get-ChildItem -Path $buildDir -Filter "*.lib" | ForEach-Object {
-            Copy-Item -Path $_.FullName -Destination "artifacts\lib"
-          }
+          $build = "v8\out.gn\build"
+          Get-ChildItem -Path $build -Filter "*.lib" | Copy-Item -Destination "artifacts\lib"
+          Get-ChildItem -Path $build -Filter "*.dll" | Copy-Item -Destination "artifacts\bin"
+          Get-ChildItem -Path $build -Filter "*.pdb" | Copy-Item -Destination "artifacts\bin"
 
-          # 3. Copy DLLs and PDBs (if they exist)
-          Get-ChildItem -Path $buildDir -Filter "*.dll" | ForEach-Object {
-            Copy-Item -Path $_.FullName -Destination "artifacts\bin"
-          }
-          Get-ChildItem -Path $buildDir -Filter "*.pdb" | ForEach-Object {
-             Copy-Item -Path $_.FullName -Destination "artifacts\bin"
-          }
-          
-          # 4. Copy ICU data (required for Shared builds usually)
-          if (Test-Path "$buildDir\icudtl.dat") {
-            Copy-Item -Path "$buildDir\icudtl.dat" -Destination "artifacts\bin"
-          }
-
-      - name: Upload Build Artifacts
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: v8-win-${{ inputs.target_arch }}-${{ inputs.linkage_type }}-${{ inputs.build_type }}
