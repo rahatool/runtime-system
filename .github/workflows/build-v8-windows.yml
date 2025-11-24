@@ -31,7 +31,7 @@ on:
       v8_version:
         description: 'V8 Version (Tag or Branch)'
         required: true
-        default: '12.4.254.15'
+        default: 'main'
         type: string
 
 jobs:
@@ -73,85 +73,84 @@ jobs:
           git checkout ${{ inputs.v8_version }}
           gclient sync
 
-      - name: Generate GN Args
+      # --- FIX: WRITE ARGS DIRECTLY TO FILE TO AVOID QUOTING ERRORS ---
+      - name: Generate Build Config (args.gn)
         shell: powershell
-        id: gn_args
+        working-directory: ${{ github.workspace }}\v8
         run: |
-          # --- HELPER: Escape quotes for GN (target_cpu="x64" -> target_cpu=\"x64\") ---
-          function GnStr { param($k, $v) return "$k=\`"$v\`"" }
-          function GnBool { param($k, $v) return "$k=$v" }
+          # 1. Create the output directory first
+          $outDir = "out.gn\build"
+          New-Item -ItemType Directory -Force -Path $outDir
 
-          $a = @()
-
-          # --- DETERMINE DYNAMIC VALUES ---
-          # We use standard If/Else instead of ternary (? :) to ensure PowerShell compatibility
-          $isShared = "false"
-          if ("${{ inputs.linkage_type }}" -eq "shared") { $isShared = "true" }
-
-          $isDebug = "false"
-          $symbolLevel = "0"
-          if ("${{ inputs.build_type }}" -eq "debug") { 
-             $isDebug = "true" 
-             $symbolLevel = "2"
-          }
-
-          # --- CORE BUILD SETTINGS ---
-          $a += GnBool "is_component_build" $isShared
-          $a += GnBool "is_debug"           $isDebug
-          $a += GnStr  "target_cpu"         "${{ inputs.target_arch }}"
-          $a += GnStr  "target_os"          "win"
-
-          # --- MSVC COMPATIBILITY ---
-          $a += GnBool "is_clang"          "false"
-          $a += GnBool "use_custom_libcxx" "false"
-
-          # --- FIBJS / FIBER STABILITY FLAGS ---
-          $a += GnBool "v8_enable_turbofan"              "true"
-          $a += GnBool "cppgc_enable_caged_heap"         "false"
-          $a += GnBool "v8_enable_pointer_compression"   "false"
-          $a += GnBool "v8_enable_sandbox"               "false"
-          $a += GnBool "v8_control_flow_integrity"       "false"
-          $a += GnBool "v8_use_external_startup_data"    "false"
-          $a += GnBool "v8_use_libm_trig_functions"      "false"
-          $a += GnBool "v8_enable_short_builtin_calls"   "false"
-          $a += GnBool "v8_enable_lazy_source_positions" "false"
-          $a += GnBool "v8_enable_allocation_folding"    "false"
-          $a += GnBool "v8_allocation_site_tracking"     "false"
-          $a += GnBool "v8_enable_system_instrumentation" "false"
-          $a += GnBool "v8_enable_lite_mode"             "false"
-          $a += GnBool "v8_enable_gdbjit"                "false"
-          $a += GnBool "v8_enable_webassembly"           "true"
-
-          # --- STATIC / MONOLITH ---
-          if ("${{ inputs.linkage_type }}" -eq "static") {
-             $a += GnBool "v8_monolithic" "true"
-          }
-
-          # --- CLEANUP ---
-          $a += GnBool "v8_deprecation_warnings"          "false"
-          $a += GnBool "v8_imminent_deprecation_warnings" "false"
-          $a += GnBool "v8_enable_tests"                  "false"
-          $a += GnBool "symbol_level"                     $symbolLevel
-
-          # Join all args with a space
-          $finalArgs = $a -join " "
+          # 2. Prepare the Argument Content
+          $content = @()
           
-          Write-Host "Args: $finalArgs"
-          echo "ARGS=$finalArgs" >> $env:GITHUB_OUTPUT
+          # Helper variables
+          $isShared = if ("${{ inputs.linkage_type }}" -eq "shared") { "true" } else { "false" }
+          $isDebug  = if ("${{ inputs.build_type }}" -eq "debug")   { "true" } else { "false" }
+          
+          # Core Settings
+          $content += "is_component_build = $isShared"
+          $content += "is_debug = $isDebug"
+          # PowerShell Syntax: "" inside a string results in a single literal "
+          $content += "target_cpu = ""${{ inputs.target_arch }}""" 
+          $content += "target_os = ""win"""
+          
+          # MSVC Settings
+          $content += "is_clang = false"
+          $content += "use_custom_libcxx = false"
 
-      - name: Configure Build
+          # Fibjs / Fiber Stability Flags
+          $content += "v8_enable_turbofan = true"
+          $content += "cppgc_enable_caged_heap = false"
+          $content += "v8_enable_pointer_compression = false"
+          $content += "v8_enable_sandbox = false"
+          $content += "v8_control_flow_integrity = false"
+          $content += "v8_use_external_startup_data = false"
+          $content += "v8_use_libm_trig_functions = false"
+          $content += "v8_enable_short_builtin_calls = false"
+          $content += "v8_enable_lazy_source_positions = false"
+          $content += "v8_enable_allocation_folding = false"
+          $content += "v8_allocation_site_tracking = false"
+          $content += "v8_enable_system_instrumentation = false"
+          $content += "v8_enable_lite_mode = false"
+          $content += "v8_enable_gdbjit = false"
+          $content += "v8_enable_webassembly = true"
+
+          # Monolith Logic
+          if ("${{ inputs.linkage_type }}" -eq "static") {
+             $content += "v8_monolithic = true"
+          }
+
+          # Cleanup / Symbols
+          $content += "v8_deprecation_warnings = false"
+          $content += "v8_imminent_deprecation_warnings = false"
+          $content += "v8_enable_tests = false"
+          
+          if ($isDebug -eq "true") {
+             $content += "symbol_level = 2"
+          } else {
+             $content += "symbol_level = 0"
+          }
+
+          # 3. Write to file
+          $content | Out-File -FilePath "$outDir\args.gn" -Encoding ascii
+          
+          # Print for verification
+          Write-Host "--- Created args.gn ---"
+          Get-Content "$outDir\args.gn"
+
+      - name: Compile V8
         shell: powershell
         working-directory: ${{ github.workspace }}\v8
         run: |
           $env:PATH = "C:\depot_tools;" + $env:PATH
-          gn gen out.gn/build --args="${{ steps.gn_args.outputs.ARGS }}"
-
-      - name: Compile
-        shell: powershell
-        working-directory: ${{ github.workspace }}\v8
-        run: |
-          $env:PATH = "C:\depot_tools;" + $env:PATH
-          $target = "${{ inputs.linkage_type == 'static' && 'v8_monolith' || 'v8' }}"
+          
+          # 1. Generate Ninja files (reads from the args.gn we created above)
+          gn gen out.gn/build
+          
+          # 2. Build
+          $target = if ("${{ inputs.linkage_type }}" -eq "static") { "v8_monolith" } else { "v8" }
           autoninja -C out.gn/build $target
 
       - name: Collect Artifacts
