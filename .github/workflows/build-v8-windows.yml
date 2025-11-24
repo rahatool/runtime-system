@@ -83,9 +83,21 @@ jobs:
 
           $a = @()
 
+          # --- DETERMINE DYNAMIC VALUES ---
+          # We use standard If/Else instead of ternary (? :) to ensure PowerShell compatibility
+          $isShared = "false"
+          if ("${{ inputs.linkage_type }}" -eq "shared") { $isShared = "true" }
+
+          $isDebug = "false"
+          $symbolLevel = "0"
+          if ("${{ inputs.build_type }}" -eq "debug") { 
+             $isDebug = "true" 
+             $symbolLevel = "2"
+          }
+
           # --- CORE BUILD SETTINGS ---
-          $a += GnBool "is_component_build" ("${{ inputs.linkage_type }}" -eq "shared" ? "true" : "false")
-          $a += GnBool "is_debug"           ("${{ inputs.build_type }}" -eq "debug" ? "true" : "false")
+          $a += GnBool "is_component_build" $isShared
+          $a += GnBool "is_debug"           $isDebug
           $a += GnStr  "target_cpu"         "${{ inputs.target_arch }}"
           $a += GnStr  "target_os"          "win"
 
@@ -93,12 +105,12 @@ jobs:
           $a += GnBool "is_clang"          "false"
           $a += GnBool "use_custom_libcxx" "false"
 
-          # --- FIBJS / FIBER STABILITY FLAGS (FROM LIST) ---
+          # --- FIBJS / FIBER STABILITY FLAGS ---
           $a += GnBool "v8_enable_turbofan"              "true"
-          $a += GnBool "cppgc_enable_caged_heap"         "false" # Essential for Fibers
-          $a += GnBool "v8_enable_pointer_compression"   "false" # Essential for Fibers
-          $a += GnBool "v8_enable_sandbox"               "false" # Essential for Fibers
-          $a += GnBool "v8_control_flow_integrity"       "false" # Essential for Stack Switch
+          $a += GnBool "cppgc_enable_caged_heap"         "false"
+          $a += GnBool "v8_enable_pointer_compression"   "false"
+          $a += GnBool "v8_enable_sandbox"               "false"
+          $a += GnBool "v8_control_flow_integrity"       "false"
           $a += GnBool "v8_use_external_startup_data"    "false"
           $a += GnBool "v8_use_libm_trig_functions"      "false"
           $a += GnBool "v8_enable_short_builtin_calls"   "false"
@@ -109,9 +121,6 @@ jobs:
           $a += GnBool "v8_enable_lite_mode"             "false"
           $a += GnBool "v8_enable_gdbjit"                "false"
           $a += GnBool "v8_enable_webassembly"           "true"
-          
-          # Note: 'v8_use_zlib=false' is omitted to allow build to use internal zlib.
-          # If set to false, you must provide system zlib paths, or the build fails.
 
           # --- STATIC / MONOLITH ---
           if ("${{ inputs.linkage_type }}" -eq "static") {
@@ -122,9 +131,11 @@ jobs:
           $a += GnBool "v8_deprecation_warnings"          "false"
           $a += GnBool "v8_imminent_deprecation_warnings" "false"
           $a += GnBool "v8_enable_tests"                  "false"
-          $a += GnBool "symbol_level"                     ("${{ inputs.build_type }}" -eq "debug" ? "2" : "0")
+          $a += GnBool "symbol_level"                     $symbolLevel
 
+          # Join all args with a space
           $finalArgs = $a -join " "
+          
           Write-Host "Args: $finalArgs"
           echo "ARGS=$finalArgs" >> $env:GITHUB_OUTPUT
 
