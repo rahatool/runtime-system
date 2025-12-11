@@ -1,0 +1,52 @@
+name: Build Custom Wasmtime
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout Wasmtime
+      uses: actions/checkout@v4
+      with:
+        repository: bytecodealliance/wasmtime
+        ref: main 
+
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        profile: minimal
+        toolchain: stable
+        override: true
+
+    - name: Build Wasmtime with All Features
+      shell: bash
+      run: |
+        # 1. Enable Unstable Internal Features
+        # This is the MOST IMPORTANT line for Stack Switching.
+        # It unlocks the C++ implementations for 'cont.new', 'suspend', etc.
+        export RUSTFLAGS="--cfg wasmtime_unstable"
+        
+        # 2. Build with Cargo
+        # - Removed 'wasi-common' (it is included automatically by default now)
+        # - Kept 'wasi-http', 'wasi-nn', 'wasi-threads' (specific addons)
+        # - Kept 'winch' (fast compiler) and 'component-model'
+        cargo build --release --bin wasmtime --features "component-model,cache,wasi-http,wasi-nn,wasi-threads,winch"
+
+    - name: Verify Version & Features
+      shell: powershell
+      run: |
+        $exe = ".\target\release\wasmtime.exe"
+        & $exe --version
+        # Check if stack-switching appears in the core wasm options
+        & $exe run -W help
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: wasmtime-custom-windows
+        path: target/release/wasmtime.exe
