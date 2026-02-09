@@ -1,0 +1,41 @@
+name: Build Wasmtime Linux (Stack Switching)
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Wasmtime
+      uses: actions/checkout@v4
+      with:
+        repository: bytecodealliance/wasmtime
+        ref: main # Uses the latest version
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Build Wasmtime with Experimental Features
+      run: |
+        # CRITICAL: This flag enables the low-level Fiber implementation in Cranelift (Linux-only)
+        export RUSTFLAGS="--cfg wasmtime_unstable"
+        
+        # Build the binary
+        # We include 'wasi-http' and 'component-model' so you can eventually bind to real sockets
+        cargo build --release --bin wasmtime --features "component-model,wasi-http,wasi-threads,cache"
+
+    - name: Verify Build
+      run: |
+        ./target/release/wasmtime --version
+        # Ensure stack-switching is visible in the options
+        ./target/release/wasmtime run -W help | grep stack-switching
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: wasmtime-linux-x86_64
+        path: target/release/wasmtime
