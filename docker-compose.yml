@@ -1,0 +1,9 @@
+services:
+  wasm-dev:
+    image: debian:bookworm-slim
+    # Keep the container running indefinitely
+    command: sleep infinity
+    volumes:
+      # Mount current folder to /app inside container
+      - ./:/app
+    working_dir: /app

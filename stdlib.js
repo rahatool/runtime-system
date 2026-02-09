@@ -1,3 +1,5 @@
+// public APIs of `runtime.js`
+
 let check = (assertion, message) => {
 	if (!assertion) {
 		throw new Error(message);
@@ -410,14 +412,13 @@ export class TLSServer extends ExternalResource {
 		};
 
 		const tlsContextId = primordials.tls.createContext(internalResolver);
-		let tcpServer;
 		try {
-			tcpServer = TCPServer.listen(port, host);
+			let tcpServer = TCPServer.listen(port, host);
+			return new TLSServer(tlsContextId, tcpServer);
 		} catch(fault) {
 			primordials.handles.free(tlsContextId);
 			throw fault;
 		}
-		return new TLSServer(tlsContextId, tcpServer);
 	}
 
 	constructor(tlsContextId, tcpServer) {

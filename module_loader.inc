@@ -27,7 +27,7 @@ v8::MaybeLocal<v8::Module> ResolveModuleCallback(
 	v8::Local<v8::FixedArray> import_assertions,
 	v8::Local<v8::Module> referrer) {
 
-	v8::Isolate* isolate = context->GetIsolate();
+	v8::Isolate* isolate = v8::Isolate::GetCurrent();
 	v8::TryCatch try_catch(isolate);
 	RuntimeState* state = static_cast<RuntimeState*>(isolate->GetData(0));
 	v8::String::Utf8Value specifier_str(isolate, specifier);
@@ -81,7 +81,7 @@ v8::MaybeLocal<v8::Module> ResolveModuleCallback(
 }
 
 void LoadAndRunModules(v8::Local<v8::Context> context, const char* entry_path_str, v8::TryCatch* try_catch) {
-	v8::Isolate* isolate = context->GetIsolate();
+	v8::Isolate* isolate = v8::Isolate::GetCurrent();
 	RuntimeState* state = static_cast<RuntimeState*>(isolate->GetData(0));
 
 	auto load_module = [&](const std::string& path) -> v8::Local<v8::Module> {

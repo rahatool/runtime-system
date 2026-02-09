@@ -62,45 +62,31 @@ inline char* GetUint8ArrayBufferData(v8::Local<v8::Value> val, size_t* len) {
 // --- Async Contexts ---
 struct AsyncContext {
 	Fiber* fiber;
-	AsyncContext(Fiber* f) : fiber(f) {}
+	ssize_t result; // Store the raw integer result from libuv
+	std::string error_path;
+	std::string error_syscall;
+
+	AsyncContext(Fiber* f) : fiber(f), result(0) {}
 	virtual ~AsyncContext() {} // Virtual destructor for safe cleanup
 
-	// Resumes the fiber with a non-error value
-	// NOTE: value must be created with context already entered if needed
-	void Resume(v8::Local<v8::Value> value) {
-		// Don't enter context here - the callback should have already done it
-		// or the value should not require context (like v8::Undefined)
-		v8::Isolate* isolate = fiber->isolate();
-		v8::HandleScope handle_scope(isolate);
-		fiber->resume_value.Reset(isolate, value);
-		Fiber::resume(fiber);
-	}
-	// Resumes the fiber with an error
-	void ResumeError(int err, const char* syscall, const char* path = nullptr) {
-		v8::Isolate* isolate = fiber->isolate();
-		v8::HandleScope handle_scope(isolate);
-		// We're already in the context (from main.cpp)
-		std::string msg = std::string(syscall) + " " + uv_strerror(err);
-		if (path) {
-			msg += " (" + std::string(path) + ")";
+	// This virtual method is called by the main loop (OnFibersToResume) 
+	// to convert the stored result into a V8 value.
+	virtual v8::Local<v8::Value> CreateResultValue(v8::Isolate* isolate) {
+		if (result < 0) {
+			// Create a V8 Error object if the result was a libuv error code.
+			std::string msg = error_syscall + " " + uv_strerror(result);
+			if (!error_path.empty()) {
+				msg += " (" + error_path + ")";
+			}
+			return v8::Exception::Error(v8::String::NewFromUtf8(isolate, msg.c_str()).ToLocalChecked());
 		}
-		v8::Local<v8::Value> error = v8::Exception::Error(v8::String::NewFromUtf8(isolate, msg.c_str()).ToLocalChecked());
-		fiber->resume_value.Reset(isolate, error);
-		Fiber::resume(fiber);
-	}
-	// Resumes the fiber with a string-based error
-	void ResumeError(const char* message) {
-		v8::Isolate* isolate = fiber->isolate();
-		v8::HandleScope handle_scope(isolate);
-		// We're already in the context (from main.cpp)
-		v8::Local<v8::Value> error = v8::Exception::Error(v8::String::NewFromUtf8(isolate, message).ToLocalChecked());
-		fiber->resume_value.Reset(isolate, error);
-		Fiber::resume(fiber);
+		// The default success value is just the integer result.
+		return v8::BigInt::New(isolate, result);
 	}
 };
 
-// Forward declarations for primitives used across files (e.g., in TLS)
+// Forward declarations
 void TCP_Poll(const v8::FunctionCallbackInfo<v8::Value>& args);
+void QueueFiberToResume(AsyncContext* context); // Make the helper available to all primitive files
 
 #endif // PRIMITIVES_H
-

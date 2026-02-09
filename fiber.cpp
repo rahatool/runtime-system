@@ -10,8 +10,7 @@ uv_loop_t* Fiber::event_loop_ = nullptr;
 
 void Fiber::init(v8::Isolate* isolate, uv_loop_t* loop) {
 	event_loop_ = loop;
-	// Note: main fiber context will be set when main.cpp creates the context
-	main_fiber_ = new Fiber(isolate); // Create the main fiber, passing isolate
+	main_fiber_ = new Fiber(isolate);
 }
 
 void Fiber::set_main_context(v8::Local<v8::Context> context) {
@@ -26,7 +25,7 @@ uv_loop_t* Fiber::get_loop() { return event_loop_; }
 Fiber::~Fiber() {
 	func_.Reset();
 	resume_value.Reset();
-	js_object.Reset(); // Reset the JS object handle
+	js_object.Reset();
 
 #ifdef _WIN32
 	if (context_ != main_fiber_->context_) {
@@ -41,9 +40,7 @@ void Fiber::run() {
 	v8::Isolate::Scope isolate_scope(isolate_);
 	v8::HandleScope handle_scope(isolate_);
 	v8::Local<v8::Context> context = isolate_->GetCurrentContext();
-	v8_context_.Reset(isolate_, context); // Store context for async callbacks
-	// DON'T use Context::Scope here - it conflicts with fiber switching
-	// All fibers share the same context, and we're already in it from main.cpp
+	v8_context_.Reset(isolate_, context);
 	v8::Local<v8::Function> func = func_.Get(isolate_);
 	v8::TryCatch try_catch(isolate_);
 
@@ -58,20 +55,17 @@ void Fiber::run() {
 // --- Windows Implementation ---
 #ifdef _WIN32
 
-// Main fiber constructor
 Fiber::Fiber(v8::Isolate* isolate) : isolate_(isolate), state_(NEW) {
 	context_ = ConvertThreadToFiber(nullptr);
 	current_fiber_ = this;
 	state_ = RUNNING;
-	js_object.Reset(isolate, v8::Object::New(isolate)); // Create persistent object
-	// Note: v8_context_ will be set when main.cpp creates the context and calls SetMainContext
+	js_object.Reset(isolate, v8::Object::New(isolate));
 }
 
-// New fiber constructor
 Fiber::Fiber(v8::Isolate* isolate, v8::Local<v8::Function> func) 
 	: isolate_(isolate), state_(NEW) {
 	func_.Reset(isolate, func);
-	js_object.Reset(isolate, v8::Object::New(isolate)); // Create persistent object
+	js_object.Reset(isolate, v8::Object::New(isolate));
 	context_ = CreateFiber(STACK_SIZE, fiber_entry, this);
 }
 
@@ -100,21 +94,18 @@ VOID CALLBACK Fiber::fiber_entry(PVOID lpParameter) {
 
 #else // --- POSIX Implementation ---
 
-// Main fiber constructor
 Fiber::Fiber(v8::Isolate* isolate) : isolate_(isolate), state_(NEW), stack_(nullptr) {
 	context_ = &uctx_;
 	getcontext(context_);
 	current_fiber_ = this;
 	state_ = RUNNING;
-	js_object.Reset(isolate, v8::Object::New(isolate)); // Create persistent object
-	// Note: v8_context_ will be set when main.cpp creates the context and calls SetMainContext
+	js_object.Reset(isolate, v8::Object::New(isolate));
 }
 
-// New fiber constructor
 Fiber::Fiber(v8::Isolate* isolate, v8::Local<v8::Function> func) 
 	: isolate_(isolate), state_(NEW) {
 	func_.Reset(isolate, func);
-	js_object.Reset(isolate, v8::Object::New(isolate)); // Create persistent object
+	js_object.Reset(isolate, v8::Object::New(isolate));
 	context_ = &uctx_;
 	getcontext(context_);
 	stack_ = new char[STACK_SIZE];
@@ -154,18 +145,26 @@ struct SleepContext : public AsyncContext {
 	SleepContext(Fiber* f) : AsyncContext(f) {
 		timer.data = this;
 	}
+	// sleep() just resolves to undefined on success.
+	v8::Local<v8::Value> CreateResultValue(v8::Isolate* isolate) override {
+		return v8::Undefined(isolate);
+	}
 };
 
 void OnSleepTimer(uv_timer_t* handle) {
 	SleepContext* context = static_cast<SleepContext*>(handle->data);
-	context->Resume(v8::Undefined(context->fiber->isolate()));
+	context->result = 0; // Success
+	
+	// Don't resume directly. Queue for the main loop.
+	QueueFiberToResume(context);
+
 	uv_close((uv_handle_t*)handle, [](uv_handle_t* h){
-		delete static_cast<SleepContext*>(h->data);
+		// The context is deleted in OnFibersToResume, not here.
+		// We just need to free the handle's memory if it was allocated separately, which it isn't.
 	});
 }
 
 void Fiber_Sleep(const v8::FunctionCallbackInfo<v8::Value>& args) {
-	v8::Isolate* isolate = args.GetIsolate();
 	int64_t ms = args[0].As<v8::BigInt>()->Int64Value();
 
 	SleepContext* context = new SleepContext(Fiber::get_current());
@@ -173,21 +172,19 @@ void Fiber_Sleep(const v8::FunctionCallbackInfo<v8::Value>& args) {
 	uv_timer_start(&context->timer, OnSleepTimer, ms, 0);
 
 	Fiber::yield();
+	// No return value needed, as sleep does not return anything.
 }
 
 void Fiber_Current(const v8::FunctionCallbackInfo<v8::Value>& args) {
-	// Return the persistent, unique object for this fiber
 	args.GetReturnValue().Set(Fiber::get_current()->js_object.Get(args.GetIsolate()));
 }
 
 void Fiber_Run(const v8::FunctionCallbackInfo<v8::Value>& args) {
 	v8::Isolate* isolate = args.GetIsolate();
 	v8::Local<v8::Function> func = args[0].As<v8::Function>();
-
 	Fiber* f = new Fiber(isolate, func);
 	Fiber::resume(f);
 }
-
 
 void InitializeFibers(v8::Isolate* isolate, v8::Local<v8::Object> exports) {
 	v8::Local<v8::Context> context = isolate->GetCurrentContext();
@@ -197,4 +194,3 @@ void InitializeFibers(v8::Isolate* isolate, v8::Local<v8::Object> exports) {
 	SET_METHOD(fiber_obj, "sleep", Fiber_Sleep);
 	exports->Set(context, v8::String::NewFromUtf8(isolate, "fiber").ToLocalChecked(), fiber_obj).Check();
 }
-

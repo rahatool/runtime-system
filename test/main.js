@@ -79,6 +79,9 @@ let tcpServer = () => {
 };
 let tcpClient = () => {
 	try {
+		// FileHandle.open('../mahdi.txt', {write:true,create:true}).write('Hi!'.toBytes());
+		// return;
+		// Fiber.sleep(2e3);
 		using socket = TCPSocket.connect('127.0.0.1', 8080);
 		socket.write('Hi!'.toBytes());
 		for (const chunk of socket) {

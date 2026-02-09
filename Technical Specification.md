@@ -241,4 +241,5 @@ export let resolver = import.meta.resolver;
 - libuv: https://github.com/nodejs/uvwasi
 
 ### see also
-https://gemini.google.com/app/4dc9d4c215bb653a
+- JIT-based JS engines (V8/JSC/SpiderMonkey) do not support call stack switching, but it is supported by [QuickJS](https://github.com/quickjs-ng/quickjs) (an interpreter-based JS engine).
+- [Building V8 Runtime with Stackful Fibers](https://gemini.google.com/app/4dc9d4c215bb653a)

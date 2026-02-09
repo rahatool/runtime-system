@@ -3,17 +3,33 @@
 #include <string>
 #include <vector>
 
+// FIX: Helper function to convert uv_fs_type enum to a string for error reporting.
+const char* FSSyscallName(uv_fs_type type) {
+    switch (type) {
+        case UV_FS_OPEN: return "open";
+        case UV_FS_CLOSE: return "close";
+        case UV_FS_READ: return "read";
+        case UV_FS_WRITE: return "write";
+        case UV_FS_UNLINK: return "unlink";
+        case UV_FS_MKDIR: return "mkdir";
+        case UV_FS_RMDIR: return "rmdir";
+        case UV_FS_SCANDIR: return "scandir";
+        case UV_FS_STAT: return "stat";
+        case UV_FS_FSTAT: return "fstat";
+        case UV_FS_FSYNC: return "fsync";
+        case UV_FS_FDATASYNC: return "fdatasync";
+        default: return "fs_op";
+    }
+}
+
 // --- Handle Implementation ---
 void FileHandle::Close() {
-	// This is synchronous for cleanup on exit.
-	// The async FS_Close primitive will remove from map.
 	uv_fs_t req;
 	uv_fs_close(Fiber::get_loop(), &req, fd, nullptr);
 	uv_fs_req_cleanup(&req);
 }
 
 void DirectoryHandle::Close() {
-	// Free remaining string copies (only those not already freed)
     for (auto& entry : entries) {
         if (entry.name != nullptr) {
             free((void*)entry.name);
@@ -26,61 +42,78 @@ void DirectoryHandle::Close() {
 // --- Async Context ---
 struct FSContext : public AsyncContext {
 	uv_fs_t req;
-	// uv_buf_t iov; // No longer needed, we use user's buffer
 	std::string path_str;
 	std::vector<uv_dirent_t> dir_entries;
 	uv_stat_t stat_buf;
-	v8::Persistent<v8::Uint8Array> user_buffer; // Hold user buffer for read/write
+	v8::Persistent<v8::Uint8Array> user_buffer;
 
 	FSContext(Fiber* f, const char* path = nullptr) : AsyncContext(f) {
 		req.data = this;
 		if (path) path_str = path;
-		// iov.base = nullptr;
 	}
 	~FSContext() {
 		user_buffer.Reset();
 		uv_fs_req_cleanup(&req);
 	}
-};
 
-// --- Callbacks ---
-void OnFSCallback(uv_fs_t* req) {
-	FSContext* context = static_cast<FSContext*>(req->data);
-	v8::Isolate* isolate = context->fiber->isolate();
-	v8::HandleScope handle_scope(isolate);
+	v8::Local<v8::Value> CreateResultValue(v8::Isolate* isolate) override {
+		if (result < 0) {
+            // FIX: Use the new helper function instead of the non-existent uv_fs_type_name.
+			error_syscall = FSSyscallName(req.fs_type);
+			error_path = path_str;
+			return AsyncContext::CreateResultValue(isolate);
+		}
 
-    if (req->result < 0) {
-        context->ResumeError(req->result, "fs", context->path_str.c_str());
-	} else {
-		switch (req->fs_type) {
+		switch (req.fs_type) {
+			case UV_FS_OPEN: {
+				auto handle = std::make_shared<FileHandle>(result, path_str.c_str());
+				uint64_t id = HandleStore::Add(handle);
+				return v8::BigInt::New(isolate, id);
+			}
 			case UV_FS_READ:
-				// Return bytes read (-1n for EOF)
-				context->Resume(v8::BigInt::New(isolate, req->result == 0 ? -1 : req->result));
-				break;
+				return v8::BigInt::New(isolate, result == 0 ? -1 : result);
+			case UV_FS_WRITE:
+				return v8::BigInt::New(isolate, result);
 			case UV_FS_SCANDIR: {
-				uv_dirent_t dent;
-				while (uv_fs_scandir_next(req, &dent) != UV_EOF) {
-					// Make a copy of the dirent
-					uv_dirent_t entry;
-					entry.name = strdup(dent.name);
-					entry.type = dent.type;
-					context->dir_entries.push_back(entry);
-				}
-				context->Resume(v8::Undefined(isolate));
-				break;
+				auto handle = std::make_shared<DirectoryHandle>(std::move(dir_entries));
+				uint64_t id = HandleStore::Add(handle);
+				return v8::BigInt::New(isolate, id);
 			}
 			case UV_FS_STAT:
-			case UV_FS_FSTAT:
-				memcpy(&context->stat_buf, req->ptr, sizeof(uv_stat_t));
-				context->Resume(v8::Undefined(isolate));
-				break;
+			case UV_FS_FSTAT: {
+				memcpy(&stat_buf, req.ptr, sizeof(uv_stat_t));
+				v8::Local<v8::Object> obj = v8::Object::New(isolate);
+				#define SET_STAT_FIELD(name, val) obj->Set(isolate->GetCurrentContext(), v8::String::NewFromUtf8(isolate, #name).ToLocalChecked(), v8::BigInt::New(isolate, val)).Check()
+				SET_STAT_FIELD(size, stat_buf.st_size);
+				SET_STAT_FIELD(mode, stat_buf.st_mode);
+				SET_STAT_FIELD(uid, stat_buf.st_uid);
+				SET_STAT_FIELD(gid, stat_buf.st_gid);
+				SET_STAT_FIELD(atimeMs, (stat_buf.st_atim.tv_sec * 1000) + (stat_buf.st_atim.tv_nsec / 1000000));
+				SET_STAT_FIELD(mtimeMs, (stat_buf.st_mtim.tv_sec * 1000) + (stat_buf.st_mtim.tv_nsec / 1000000));
+				return obj;
+			}
 			default:
-				// For open, write, close, sync
-				context->Resume(v8::BigInt::New(isolate, req->result));
-				break;
+				return v8::Undefined(isolate);
 		}
 	}
-	delete context;
+};
+
+// --- Callback ---
+void OnFSCallback(uv_fs_t* req) {
+	FSContext* context = static_cast<FSContext*>(req->data);
+	context->result = req->result;
+
+	if (req->fs_type == UV_FS_SCANDIR && req->result >= 0) {
+		uv_dirent_t dent;
+		while (uv_fs_scandir_next(req, &dent) != UV_EOF) {
+			uv_dirent_t entry;
+			entry.name = strdup(dent.name);
+			entry.type = dent.type;
+			context->dir_entries.push_back(entry);
+		}
+	}
+
+	QueueFiberToResume(context);
 }
 
 // --- Primitives ---
@@ -91,17 +124,12 @@ void FS_Open(const v8::FunctionCallbackInfo<v8::Value>& args) {
 	int mode = args[2]->Int32Value(isolate->GetCurrentContext()).ToChecked();
 
 	FSContext* context = new FSContext(Fiber::get_current(), *path);
-	int r = uv_fs_open(Fiber::get_loop(), &context->req, *path, flags, mode, OnFSCallback);
-	if (r < 0) { delete context; ThrowUVException(isolate, r, "open", *path); return; }
+	uv_fs_open(Fiber::get_loop(), &context->req, *path, flags, mode, OnFSCallback);
 
 	Fiber::yield();
 	v8::Local<v8::Value> result = Fiber::get_current()->resume_value.Get(isolate);
 	if(result->IsNativeError()) { isolate->ThrowException(result); return; }
-
-	uv_file fd = result.As<v8::BigInt>()->Int64Value();
-	auto handle = std::make_shared<FileHandle>(fd, *path);
-	uint64_t id = HandleStore::Add(handle);
-	args.GetReturnValue().Set(v8::BigInt::New(isolate, id));
+	args.GetReturnValue().Set(result);
 }
 
 void FS_Read(const v8::FunctionCallbackInfo<v8::Value>& args) {
@@ -114,20 +142,18 @@ void FS_Read(const v8::FunctionCallbackInfo<v8::Value>& args) {
 	if (!handle) { Throw(isolate, "Invalid file handle"); return; }
 
 	FSContext* context = new FSContext(Fiber::get_current(), handle->path.c_str());
-	context->user_buffer.Reset(isolate, buffer_view); // Keep buffer alive
+	context->user_buffer.Reset(isolate, buffer_view);
 
 	size_t len;
 	char* data = GetUint8ArrayBufferData(buffer_view, &len);
-	uv_buf_t iov = uv_buf_init(data, len); // Use user buffer directly
+	uv_buf_t iov = uv_buf_init(data, len);
 
-	int r = uv_fs_read(Fiber::get_loop(), &context->req, handle->fd, &iov, 1, position, OnFSCallback);
-	if (r < 0) { delete context; ThrowUVException(isolate, r, "read", handle->path.c_str()); return; }
+	uv_fs_read(Fiber::get_loop(), &context->req, handle->fd, &iov, 1, position, OnFSCallback);
 
 	Fiber::yield();
 	v8::Local<v8::Value> result = Fiber::get_current()->resume_value.Get(isolate);
 	if(result->IsNativeError()) { isolate->ThrowException(result); return; }
-
-	args.GetReturnValue().Set(result); // Bytes read or -1n for EOF
+	args.GetReturnValue().Set(result);
 }
 
 void FS_Write(const v8::FunctionCallbackInfo<v8::Value>& args) {
@@ -140,20 +166,18 @@ void FS_Write(const v8::FunctionCallbackInfo<v8::Value>& args) {
 	if (!handle) { Throw(isolate, "Invalid file handle"); return; }
 
 	FSContext* context = new FSContext(Fiber::get_current(), handle->path.c_str());
-	context->user_buffer.Reset(isolate, buffer_view); // Keep buffer alive
+	context->user_buffer.Reset(isolate, buffer_view);
 
 	size_t len;
-	// V8 buffer data is const, but uv_fs_write won't modify it.
 	char* data = GetUint8ArrayBufferData(buffer_view, &len);
-	uv_buf_t iov = uv_buf_init(const_cast<char*>(data), len); // Use user buffer directly
+	uv_buf_t iov = uv_buf_init(const_cast<char*>(data), len);
 
-	int r = uv_fs_write(Fiber::get_loop(), &context->req, handle->fd, &iov, 1, position, OnFSCallback);
-	if (r < 0) { delete context; ThrowUVException(isolate, r, "write", handle->path.c_str()); return; }
+	uv_fs_write(Fiber::get_loop(), &context->req, handle->fd, &iov, 1, position, OnFSCallback);
 
 	Fiber::yield();
 	v8::Local<v8::Value> result = Fiber::get_current()->resume_value.Get(isolate);
 	if(result->IsNativeError()) { isolate->ThrowException(result); return; }
-	args.GetReturnValue().Set(result); // Bytes written
+	args.GetReturnValue().Set(result);
 }
 
 void FS_Close(const v8::FunctionCallbackInfo<v8::Value>& args) {
@@ -163,26 +187,13 @@ void FS_Close(const v8::FunctionCallbackInfo<v8::Value>& args) {
 	if (!handle) { Throw(isolate, "Invalid file handle"); return; }
 
 	FSContext* context = new FSContext(Fiber::get_current(), handle->path.c_str());
-	int r = uv_fs_close(Fiber::get_loop(), &context->req, handle->fd, OnFSCallback);
-	if (r < 0) { delete context; ThrowUVException(isolate, r, "close", handle->path.c_str()); return; }
+	uv_fs_close(Fiber::get_loop(), &context->req, handle->fd, OnFSCallback);
 
 	Fiber::yield();
-	HandleStore::Remove(id); // Remove from map after close completes
+	HandleStore::Remove(id);
 	v8::Local<v8::Value> result = Fiber::get_current()->resume_value.Get(isolate);
 	if(result->IsNativeError()) { isolate->ThrowException(result); return; }
 	args.GetReturnValue().Set(v8::Undefined(isolate));
-}
-
-v8::Local<v8::Object> FillStatObject(v8::Isolate* isolate, uv_stat_t* s) {
-	v8::Local<v8::Object> obj = v8::Object::New(isolate);
-	#define SET_STAT_FIELD(name, val) obj->Set(isolate->GetCurrentContext(), v8::String::NewFromUtf8(isolate, #name).ToLocalChecked(), v8::BigInt::New(isolate, val)).Check()
-	SET_STAT_FIELD(size, s->st_size);
-	SET_STAT_FIELD(mode, s->st_mode);
-	SET_STAT_FIELD(uid, s->st_uid);
-	SET_STAT_FIELD(gid, s->st_gid);
-	SET_STAT_FIELD(atimeMs, (s->st_atim.tv_sec * 1000) + (s->st_atim.tv_nsec / 1000000));
-	SET_STAT_FIELD(mtimeMs, (s->st_mtim.tv_sec * 1000) + (s->st_mtim.tv_nsec / 1000000));
-	return obj;
 }
 
 void FS_Status(const v8::FunctionCallbackInfo<v8::Value>& args) {
@@ -192,23 +203,21 @@ void FS_Status(const v8::FunctionCallbackInfo<v8::Value>& args) {
 	if (!handle) { Throw(isolate, "Invalid file handle"); return; }
 
 	FSContext* context = new FSContext(Fiber::get_current(), handle->path.c_str());
-	int r = uv_fs_fstat(Fiber::get_loop(), &context->req, handle->fd, OnFSCallback);
-	if (r < 0) { delete context; ThrowUVException(isolate, r, "fstat", handle->path.c_str()); return; }
+	uv_fs_fstat(Fiber::get_loop(), &context->req, handle->fd, OnFSCallback);
 
 	Fiber::yield();
 	v8::Local<v8::Value> result = Fiber::get_current()->resume_value.Get(isolate);
 	if(result->IsNativeError()) { isolate->ThrowException(result); return; }
-	args.GetReturnValue().Set(FillStatObject(isolate, &context->stat_buf));
+	args.GetReturnValue().Set(result);
 }
 
-#define FS_ASYNC_HANDLE_ONLY_CALL(name, func) \
+#define FS_ASYNC_HANDLE_ONLY_CALL(name_str, func) \
 	v8::Isolate* isolate = args.GetIsolate(); \
 	uint64_t id = args[0].As<v8::BigInt>()->Uint64Value(); \
 	auto handle = HandleStore::Get<FileHandle>(id); \
 	if (!handle) { Throw(isolate, "Invalid file handle"); return; } \
 	FSContext* context = new FSContext(Fiber::get_current(), handle->path.c_str()); \
-	int r = func(Fiber::get_loop(), &context->req, handle->fd, OnFSCallback); \
-	if (r < 0) { delete context; ThrowUVException(isolate, r, name, handle->path.c_str()); return; } \
+	func(Fiber::get_loop(), &context->req, handle->fd, OnFSCallback); \
 	Fiber::yield(); \
 	v8::Local<v8::Value> result = Fiber::get_current()->resume_value.Get(isolate); \
 	if(result->IsNativeError()) { isolate->ThrowException(result); return; } \
@@ -221,12 +230,11 @@ void FS_DataSync(const v8::FunctionCallbackInfo<v8::Value>& args) {
 	FS_ASYNC_HANDLE_ONLY_CALL("fdatasync", uv_fs_fdatasync);
 }
 
-#define FS_ASYNC_PATH_ONLY_CALL(name, func, ...) \
+#define FS_ASYNC_PATH_ONLY_CALL(name_str, func, ...) \
 	v8::Isolate* isolate = args.GetIsolate(); \
 	v8::String::Utf8Value path(isolate, args[0]); \
 	FSContext* context = new FSContext(Fiber::get_current(), *path); \
-	int r = func(Fiber::get_loop(), &context->req, *path, ##__VA_ARGS__, OnFSCallback); \
-	if (r < 0) { delete context; ThrowUVException(isolate, r, name, *path); return; } \
+	func(Fiber::get_loop(), &context->req, *path, ##__VA_ARGS__, OnFSCallback); \
 	Fiber::yield(); \
 	v8::Local<v8::Value> result = Fiber::get_current()->resume_value.Get(isolate); \
 	if(result->IsNativeError()) { isolate->ThrowException(result); return; } \
@@ -248,17 +256,12 @@ void FS_DirOpen(const v8::FunctionCallbackInfo<v8::Value>& args) {
 	v8::String::Utf8Value path(isolate, args[0]);
 	FSContext* context = new FSContext(Fiber::get_current(), *path);
 
-	int r = uv_fs_scandir(Fiber::get_loop(), &context->req, *path, 0, OnFSCallback);
-	if (r < 0) { delete context; ThrowUVException(isolate, r, "scandir", *path); return; }
-
+	uv_fs_scandir(Fiber::get_loop(), &context->req, *path, 0, OnFSCallback);
+	
 	Fiber::yield();
 	v8::Local<v8::Value> result = Fiber::get_current()->resume_value.Get(isolate);
 	if(result->IsNativeError()) { isolate->ThrowException(result); return; }
-
-	// Steal the vector of entries from the context before it's deleted
-	auto handle = std::make_shared<DirectoryHandle>(std::move(context->dir_entries));
-	uint64_t id = HandleStore::Add(handle);
-	args.GetReturnValue().Set(v8::BigInt::New(isolate, id));
+	args.GetReturnValue().Set(result);
 }
 
 void FS_DirRead(const v8::FunctionCallbackInfo<v8::Value>& args) {
@@ -277,8 +280,8 @@ void FS_DirRead(const v8::FunctionCallbackInfo<v8::Value>& args) {
 	v8::Local<v8::Object> entry = v8::Object::New(isolate);
 	entry->Set(context, v8::String::NewFromUtf8(isolate, "name").ToLocalChecked(), v8::String::NewFromUtf8(isolate, dent.name).ToLocalChecked()).Check();
 	entry->Set(context, v8::String::NewFromUtf8(isolate, "type").ToLocalChecked(), v8::Integer::New(isolate, dent.type)).Check();
-    free((void*)dent.name); // Free the strdup'd name
-	dent.name = nullptr; // Mark as freed to avoid double-free in Close()
+    free((void*)dent.name);
+	dent.name = nullptr;
 	args.GetReturnValue().Set(entry);
 }
 
@@ -287,7 +290,7 @@ void FS_DirClose(const v8::FunctionCallbackInfo<v8::Value>& args) {
 	auto handle = HandleStore::Get<DirectoryHandle>(id);
 	if (!handle) { Throw(args.GetIsolate(), "Invalid directory handle"); return; }
 	
-	handle->Close(); // Frees remaining strings
+	handle->Close();
 	HandleStore::Remove(id);
 }
 
@@ -309,4 +312,3 @@ void InitializeFS(v8::Isolate* isolate, v8::Local<v8::Object> exports) {
 	SET_METHOD(fs_obj, "dirRemove", FS_DirRemove);
 	exports->Set(context, v8::String::NewFromUtf8(isolate, "fs").ToLocalChecked(), fs_obj).Check();
 }
-
